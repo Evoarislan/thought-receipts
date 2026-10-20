@@ -9,7 +9,7 @@
  * reasonWithModel() later; the receipt shape stays identical.
  */
 import { payForStep, AGENT_WALLETS, USER_WALLET, PRICE_PER_STEP_USDC } from "./x402.js";
-import type { Receipt } from "./receipts.js";
+import { chainReceipts, type Receipt, type ReceiptStatus } from "./receipts.js";
 
 export const STEP_COUNT = 7;
 export const PRICE_PER_STEP = PRICE_PER_STEP_USDC;
@@ -288,7 +288,7 @@ const STEP_DEFS: StepDef[] = [
         ctx.verdict,
       ];
       return {
-        outputSummary: `Total ${fmt(ctx.total)} vs ${fmt(ctx.profile.budget)} cap. ${ctx.verdict}`,
+        outputSummary: `Checked "${hotel.name}": total ${fmt(ctx.total)} vs ${fmt(ctx.profile.budget)} cap. ${ctx.verdict}`,
         detail: `Budget check (${ctx.tier} tier):\n${ctx.lines.map((l) => `- ${l}`).join("\n")}`,
       };
     },
@@ -350,10 +350,15 @@ export interface PipelineRun {
  * Run the full pipeline. `overrides` maps a step seq to replacement input
  * text: that step (and everything downstream) re-executes with the new input.
  * Used by the challenge flow.
+ *
+ * `chaos` simulates a step failure: the named step's first attempt fails
+ * (a $0 failed receipt is recorded), the coordinator retries it (a recovered
+ * receipt is recorded), and the pipeline completes. Used by the demo.
  */
 export async function runPipeline(
   task: string,
-  overrides: Map<number, string> = new Map()
+  overrides: Map<number, string> = new Map(),
+  chaos?: { failStep: number }
 ): Promise<PipelineRun> {
   const clean = task.trim().slice(0, 500);
   if (!clean) throw new Error("task is required");
@@ -376,34 +381,110 @@ export async function runPipeline(
   const firstChanged = overrides.size > 0 ? Math.min(...overrides.keys()) : Number.POSITIVE_INFINITY;
   const receipts: Receipt[] = [];
 
+  function pushReceipt(args: {
+    def: StepDef;
+    input: string;
+    outputSummary: string;
+    detail: string;
+    payment: { from: string; to: string; amountUSDC: string; txRef: string; mock: boolean };
+    status: ReceiptStatus;
+    note?: string;
+  }): void {
+    receipts.push({
+      seq: args.def.seq,
+      agent: args.def.agent,
+      step: args.def.step,
+      title: args.def.title,
+      inputSummary: summarize(args.input),
+      inputFull: args.input,
+      outputSummary: args.outputSummary,
+      detail: args.detail,
+      amountUSDC: args.payment.amountUSDC,
+      payer: args.payment.from,
+      payee: args.payment.to,
+      txRef: args.payment.txRef,
+      timestamp: new Date().toISOString(),
+      mock: args.payment.mock,
+      rechained: args.def.seq >= firstChanged,
+      status: args.status,
+      ...(args.note ? { note: args.note } : {}),
+      prevHash: "",
+      hash: "",
+    });
+  }
+
   for (const def of STEP_DEFS) {
-    // Every reasoning step is paid before it runs.
     const input = overrides.get(def.seq) ?? def.buildInput(ctx, clean);
+    const payee = AGENT_WALLETS[def.agent] ?? USER_WALLET;
+
+    // Chaos: this step's first attempt fails before it runs.
+    if (chaos && chaos.failStep === def.seq) {
+      pushReceipt({
+        def,
+        input,
+        outputSummary: `Attempt failed: ${def.agent} specialist timed out before producing output.`,
+        detail: `Attempt 1 of step ${def.seq} ("${def.title}") failed: specialist timeout. No payment was taken. The coordinator retried the step automatically.`,
+        payment: {
+          from: USER_WALLET,
+          to: payee,
+          amountUSDC: "0",
+          txRef: "no-tx",
+          mock: true,
+        },
+        status: "failed",
+        note: "specialist timeout",
+      });
+      // Retry: pay normally and run the step.
+      const payment = await payForStep({
+        from: USER_WALLET,
+        to: payee,
+        amountUSDC: PRICE_PER_STEP,
+        memo: `thought-receipts/${def.step}`,
+      });
+      const out = def.execute(ctx, input);
+      pushReceipt({
+        def,
+        input,
+        outputSummary: out.outputSummary,
+        detail: out.detail,
+        payment: {
+          from: payment.from,
+          to: payment.to,
+          amountUSDC: payment.amountUSDC,
+          txRef: payment.txRef,
+          mock: payment.mock,
+        },
+        status: "recovered",
+        note: "retry succeeded",
+      });
+      continue;
+    }
+
+    // Every reasoning step is paid before it runs.
     const payment = await payForStep({
       from: USER_WALLET,
-      to: AGENT_WALLETS[def.agent] ?? USER_WALLET,
+      to: payee,
       amountUSDC: PRICE_PER_STEP,
       memo: `thought-receipts/${def.step}`,
     });
     const out = def.execute(ctx, input);
-    receipts.push({
-      seq: def.seq,
-      agent: def.agent,
-      step: def.step,
-      title: def.title,
-      inputSummary: summarize(input),
-      inputFull: input,
+    pushReceipt({
+      def,
+      input,
       outputSummary: out.outputSummary,
       detail: out.detail,
-      amountUSDC: PRICE_PER_STEP.toFixed(2),
-      payer: payment.from,
-      payee: payment.to,
-      txRef: payment.txRef,
-      timestamp: new Date().toISOString(),
-      mock: payment.mock,
-      rechained: def.seq >= firstChanged,
+      payment: {
+        from: payment.from,
+        to: payment.to,
+        amountUSDC: payment.amountUSDC,
+        txRef: payment.txRef,
+        mock: payment.mock,
+      },
+      status: "ok",
     });
   }
 
+  // Seal the chain: every receipt gets prevHash/hash in order.
+  chainReceipts(receipts);
   return { answer: ctx.finalAnswer, receipts };
 }

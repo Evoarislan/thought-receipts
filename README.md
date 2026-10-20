@@ -8,10 +8,16 @@ A coordinator agent breaks your task into subtasks. Three specialist agents (res
 
 The "why" is the receipt chain. Ask why the agent did something, and it shows you the receipt for the exact reasoning step: what it was paid, what it was told, what it produced.
 
-Two things make it memorable:
+Three things make it memorable:
 
 1. **The itemized bill for thinking.** When the agent answers, you see exactly what the thought cost: "This answer cost $0.07 across 7 reasoning steps." Nobody has shown a receipt for an agent's thought process before.
 2. **Challenge a step.** Click any receipt, edit that step's input, and watch the downstream chain re-execute. Change "budget traveler" to "luxury traveler" at the lodging step and watch the hotel pick, the budget total, and the itinerary all rewrite themselves.
+3. **Tamper-evident receipts.** Every receipt is hash-chained (sha256 over the previous hash plus the receipt body). Edit one character and verification breaks downstream of the edit. The **Verify chain** button proves it live.
+
+Two more demo beats:
+
+- **Ask why.** A "Why?" box answers questions about the run in plain English, grounded in the receipt chain with clickable citations. Try: "why did you pick the Park Hyatt?"
+- **Break and recover.** Tick "Simulate a step failure" before running. That step's first attempt fails (a $0 receipt records the timeout), the coordinator retries automatically (a "recovered" receipt records the retry), and the pipeline completes. The bill still totals $0.07.
 
 ## Track fit
 
@@ -58,7 +64,10 @@ API:
 
 - `GET /api/health` -> `{ ok, mock, pricePerStepUSDC, stepsPerRun }`
 - `POST /api/run` with `{ "task": "..." }` -> `{ answer, bill, receipts, mock }`
+- `POST /api/run` with `{ "task": "...", "chaos": { "failStep": 3 } }` -> same, but step 3 fails once and recovers
 - `POST /api/challenge` with `{ "task": "...", "receiptSeq": 2, "newInput": "..." }` -> `{ answer, bill, receipts, changedFrom, mock }`
+- `GET /api/verify` -> `{ valid: true }` or `{ valid: false, brokenAt: <seq> }`
+- `POST /api/why` with `{ "question": "..." }` -> `{ answer, citations: [<seq>, ...] }`
 
 Live mode (real EIP-3009 signing on Base Sepolia):
 
@@ -74,15 +83,19 @@ In live mode the buyer signs a real authorization per step. Signed, not submitte
 2. Read the itemized bill: "This answer cost $0.07 across 7 reasoning steps."
 3. Click receipt **#2 (Research lodging options)**. Change its input to "luxury traveler, 5-star hotels only". Click **Re-run from this step**.
 4. Watch steps 2 through 7 re-execute (marked "re-executed"): the hotel pick jumps to Park Hyatt tier pricing, the budget total jumps with it, the itinerary rewrites. The bill updates. Steps 1 stays unchanged.
-5. Point at the mock banner: all payments are simulated in this demo; flip `MOCK=false` for real EIP-3009 signatures.
+5. Ask **"why did you pick the Park Hyatt?"** in the Why box. The answer cites receipts #2, #5, #6. Click a citation chip to jump to that receipt.
+6. Click **Verify chain**: the badge reads VALID. Then click **Simulate tampering** (client-side only): a copy of one receipt is edited, and the local checker reports `{ valid: false, brokenAt: 3 }`. One edited character breaks the chain from that point on.
+7. Tick **"Simulate a step failure"** and run again: step 3's first attempt fails (a red $0 receipt records the timeout), the retry succeeds (green "recovered" badge), the pipeline completes, and the bill still totals $0.07.
+8. Point at the mock banner: all payments are simulated in this demo; flip `MOCK=false` for real EIP-3009 signatures.
 
 ## Repo layout
 
 - `src/x402.ts` ... x402 payment helper (mock + live EIP-3009 signing)
-- `src/agents.ts` ... coordinator + 3 specialists, deterministic mock reasoning, LLM adapter seam (`reasonWithModel`)
-- `src/receipts.ts` ... receipt chain and itemized bill
+- `src/agents.ts` ... coordinator + 3 specialists, deterministic mock reasoning, LLM adapter seam (`reasonWithModel`), chaos failure/recovery mode
+- `src/receipts.ts` ... hash-chained receipts (sha256, prevHash), tamper verification, itemized bill
+- `src/why.ts` ... "Why?" answering over the receipt chain with citations, LLM upgrade seam
 - `src/server.ts` ... plain `http` server, JSON API, static frontend
-- `public/index.html` ... dark single-page UI: live feed, bill, challenge panel
+- `public/index.html` ... dark single-page UI: live feed, bill, challenge panel, Why box, verify badge, tamper simulation
 
 ## Honest notes
 

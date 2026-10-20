@@ -4,21 +4,31 @@
  *   GET  /api/health     -> { ok, mock, pricePerStepUSDC, stepsPerRun }
  *   POST /api/run        -> { answer, bill, receipts, mock }
  *   POST /api/challenge  -> { answer, bill, receipts, changedFrom, mock }
+ *   GET  /api/verify     -> { valid } or { valid: false, brokenAt }
+ *   POST /api/why        -> { answer, citations }
  *
  * /api/challenge re-runs the pipeline from one receipt with edited input and
  * returns the new chain. Steps before the challenged one are unchanged.
+ *
+ * /api/run accepts optional chaos: { failStep: n } to simulate a step
+ * failure and automatic recovery. The latest run's receipts are kept in
+ * memory so /api/verify and /api/why can read them.
  */
 import { createServer, IncomingMessage, ServerResponse } from "http";
 import { readFile } from "fs/promises";
 import { dirname, join, normalize } from "path";
 import { fileURLToPath } from "url";
 import { runPipeline, STEP_COUNT } from "./agents.js";
-import { buildBill } from "./receipts.js";
+import { buildBill, verifyChain, type Receipt } from "./receipts.js";
+import { answerWhy } from "./why.js";
 import { MOCK_MODE, PRICE_PER_STEP_USDC } from "./x402.js";
 
 const PORT = Number(process.env.PORT || 3003);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, "..", "public");
+
+/** Latest run's receipts, kept in memory for /api/verify and /api/why. */
+let latestReceipts: Receipt[] = [];
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -76,9 +86,21 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
 
     if (req.method === "POST" && pathname === "/api/run") {
-      const body = JSON.parse(await readBody(req)) as { task?: string };
+      const body = JSON.parse(await readBody(req)) as {
+        task?: string;
+        chaos?: { failStep?: number };
+      };
       if (!body.task || !body.task.trim()) throw new Error("task is required");
-      const { answer, receipts } = await runPipeline(body.task);
+      let chaos: { failStep: number } | undefined;
+      if (body.chaos && body.chaos.failStep !== undefined) {
+        const n = Number(body.chaos.failStep);
+        if (!Number.isInteger(n) || n < 1 || n > STEP_COUNT) {
+          throw new Error(`chaos.failStep must be between 1 and ${STEP_COUNT}`);
+        }
+        chaos = { failStep: n };
+      }
+      const { answer, receipts } = await runPipeline(body.task, new Map(), chaos);
+      latestReceipts = receipts;
       json(res, 200, { answer, bill: buildBill(receipts), receipts, mock: MOCK_MODE });
       return;
     }
@@ -97,6 +119,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       if (!newInput) throw new Error("newInput is required");
       const { answer, receipts } = await runPipeline(body.task, new Map([[seq, newInput]]));
+      latestReceipts = receipts;
       json(res, 200, {
         answer,
         bill: buildBill(receipts),
@@ -104,6 +127,22 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         changedFrom: seq,
         mock: MOCK_MODE,
       });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/verify") {
+      if (latestReceipts.length === 0) {
+        json(res, 200, { valid: false, error: "No run yet. Run the network first." });
+        return;
+      }
+      json(res, 200, verifyChain(latestReceipts));
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/why") {
+      const body = JSON.parse(await readBody(req)) as { question?: string };
+      const { answer, citations } = await answerWhy(latestReceipts, body.question ?? "");
+      json(res, 200, { answer, citations });
       return;
     }
 

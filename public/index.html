@@ -9,6 +9,7 @@
     --bg: #0b0e14; --panel: #12161f; --line: #232a3a;
     --text: #e6e9f0; --dim: #9aa3b2;
     --green: #6ee7a0; --amber: #f5b942; --blue: #7cc4ff; --violet: #c4a7ff;
+    --red: #ff8a8a;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
@@ -24,21 +25,30 @@
   main { max-width: 980px; margin: 0 auto; padding: 20px 24px 80px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 18px; }
   .card h2 { margin: 0 0 12px; font-size: 16px; }
+  .card h2 .tools { float: right; display: flex; gap: 8px; align-items: center; }
   label { display: block; font-size: 13px; color: var(--dim); margin-bottom: 8px; }
-  textarea { width: 100%; background: #0d1119; color: var(--text); border: 1px solid var(--line);
+  label.inline { display: inline; margin: 0; }
+  textarea, input[type="text"] { width: 100%; background: #0d1119; color: var(--text); border: 1px solid var(--line);
     border-radius: 10px; padding: 12px; font-size: 15px; resize: vertical; }
-  textarea:focus { outline: none; border-color: var(--green); }
+  textarea:focus, input[type="text"]:focus { outline: none; border-color: var(--green); }
+  select { background: #0d1119; color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; font-size: 14px; }
+  input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--green); vertical-align: -3px; }
   .row { display: flex; align-items: center; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
   button { background: var(--green); color: #06130b; border: none; border-radius: 10px;
     padding: 12px 20px; font-size: 15px; font-weight: 700; cursor: pointer; }
   button:disabled { opacity: .45; cursor: wait; }
   button.ghost { background: transparent; color: var(--dim); border: 1px solid var(--line); font-weight: 500; }
+  button.small { padding: 7px 12px; font-size: 13px; border-radius: 8px; }
   .hint { font-size: 13px; color: var(--dim); }
   #feed { display: grid; gap: 10px; }
   .receipt { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
-    cursor: pointer; transition: border-color .15s, transform .15s; background: #0d1119; }
+    cursor: pointer; transition: border-color .15s, transform .15s, box-shadow .3s; background: #0d1119; }
   .receipt:hover { border-color: var(--blue); transform: translateY(-1px); }
   .receipt.rechained { border-color: rgba(196,167,255,.6); background: rgba(196,167,255,.05); }
+  .receipt.failed { border-color: rgba(255,138,138,.55); background: rgba(255,138,138,.05); }
+  .receipt.recovered { border-color: rgba(110,231,160,.55); background: rgba(110,231,160,.05); }
+  .receipt.flash { box-shadow: 0 0 0 3px var(--blue); border-color: var(--blue); }
   .rhead { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 8px; flex-wrap: wrap; }
   .seq { font-family: ui-monospace, monospace; background: #1a2130; padding: 3px 8px; border-radius: 6px; color: var(--blue); }
   .agent { color: var(--violet); font-weight: 600; }
@@ -46,10 +56,14 @@
   .tag.mock { background: rgba(245,185,66,.15); color: var(--amber); }
   .tag.live { background: rgba(110,231,160,.15); color: var(--green); }
   .tag.re { background: rgba(196,167,255,.15); color: var(--violet); }
+  .tag.failed { background: rgba(255,138,138,.15); color: var(--red); }
+  .tag.recovered { background: rgba(110,231,160,.18); color: var(--green); }
   .amt { margin-left: auto; font-family: ui-monospace, monospace; color: var(--green); font-weight: 700; }
+  .amt.zero { color: var(--dim); }
   .rtitle { font-weight: 700; margin-bottom: 6px; }
   .rbody { font-size: 13.5px; color: var(--dim); line-height: 1.55; }
   .rbody .k { color: var(--text); font-weight: 600; }
+  .rnote { margin-top: 6px; font-size: 12.5px; color: var(--amber); }
   .rtx { margin-top: 8px; font-family: ui-monospace, monospace; font-size: 11.5px; color: #5d6878; }
   .rhint { margin-top: 6px; font-size: 12px; color: var(--blue); }
   #billWow { font-size: 17px; font-weight: 700; color: var(--green); margin-bottom: 12px; }
@@ -58,10 +72,23 @@
   th { color: var(--dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
   td.num, th.num { text-align: right; font-family: ui-monospace, monospace; }
   tr.total td { font-weight: 800; border-bottom: none; color: var(--green); }
+  tr.failedrow td { color: var(--dim); }
+  .lnote { display: block; font-size: 11.5px; color: var(--amber); margin-top: 2px; }
   #answer { white-space: pre-wrap; font-size: 14px; line-height: 1.65; margin: 0;
     font-family: ui-sans-serif, system-ui, sans-serif; }
   #note { background: rgba(124,196,255,.08); border: 1px solid rgba(124,196,255,.35);
     border-radius: 10px; padding: 10px 14px; font-size: 13.5px; margin-bottom: 14px; color: #bfe0ff; }
+  #whyAnswer { background: #0d1119; border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; margin-top: 12px; }
+  .cites { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .cite { background: rgba(124,196,255,.12); border: 1px solid rgba(124,196,255,.4); color: var(--blue);
+    border-radius: 999px; padding: 5px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+  .cite:hover { background: rgba(124,196,255,.22); }
+  .badge { padding: 6px 14px; border-radius: 999px; font-size: 13px; font-weight: 800; letter-spacing: .3px; }
+  .badge.valid { background: rgba(110,231,160,.15); border: 1px solid var(--green); color: var(--green); }
+  .badge.tampered { background: rgba(255,138,138,.15); border: 1px solid var(--red); color: var(--red); }
+  .badge.idle { background: transparent; border: 1px dashed var(--line); color: var(--dim); }
+  #tamperOut { margin-top: 10px; font-size: 13.5px; line-height: 1.6; color: var(--dim); }
   #challengePanel { position: fixed; top: 0; right: 0; width: min(440px, 94vw); height: 100vh;
     background: var(--panel); border-left: 1px solid var(--line); padding: 22px; overflow-y: auto;
     box-shadow: -20px 0 60px rgba(0,0,0,.5); z-index: 10; }
@@ -78,13 +105,18 @@
 <body>
 <header>
   <h1><span class="tick">✓</span> Thought Receipts</h1>
-  <p>A pay-per-thought agent network. A coordinator breaks your task into subtasks, specialist agents execute each one behind a $0.01 x402 paywall, and every payment, input, and output is logged as a receipt. The receipt chain is the explanation of why.</p>
+  <p>A pay-per-thought agent network. A coordinator breaks your task into subtasks, specialist agents execute each one behind a $0.01 x402 paywall, and every payment, input, and output is logged as a hash-chained receipt. The receipt chain is the explanation of why.</p>
 </header>
 <div id="mockBanner" class="banner mock"></div>
 <main>
   <section class="card">
     <label for="task">Task for the agent network</label>
     <textarea id="task" rows="3">Plan a 3-day Tokyo itinerary under $1500</textarea>
+    <div class="row">
+      <label class="inline hint"><input type="checkbox" id="chaosToggle"> Simulate a step failure</label>
+      <label class="inline hint" for="chaosStep">at step</label>
+      <select id="chaosStep"></select>
+    </div>
     <div class="row">
       <button id="runBtn">Run the network</button>
       <span class="hint" id="priceHint"></span>
@@ -94,9 +126,16 @@
   <div id="note" hidden></div>
 
   <section class="card" id="feedWrap" hidden>
-    <h2>Receipt chain</h2>
+    <h2>Receipt chain
+      <span class="tools">
+        <button class="ghost small" id="verifyBtn">Verify chain</button>
+        <button class="ghost small" id="tamperBtn" title="Client-side demo only. The server chain is never modified.">Simulate tampering</button>
+        <span class="badge idle" id="verifyBadge">not checked</span>
+      </span>
+    </h2>
     <div id="feed"></div>
-    <p class="hint" style="margin-top:12px">Click any receipt to challenge that step: edit its input and re-run everything downstream.</p>
+    <div id="tamperOut"></div>
+    <p class="hint" style="margin-top:12px">Click any receipt to challenge that step: edit its input and re-run everything downstream. "Simulate tampering" alters a client-side copy only, to show what verification reports when a receipt is edited.</p>
   </section>
 
   <section class="card" id="billWrap" hidden>
@@ -106,6 +145,16 @@
       <thead><tr><th>#</th><th>Reasoning step</th><th>Agent</th><th class="num">Amount</th></tr></thead>
       <tbody id="billBody"></tbody>
     </table>
+    <div style="margin-top:18px">
+      <label for="whyQ">Ask the chain why</label>
+      <input type="text" id="whyQ" placeholder='e.g. why did you pick the Park Hyatt?'>
+      <div class="row">
+        <button class="small" id="whyBtn">Ask why</button>
+        <span class="hint">Answers are grounded in the receipts above, with citations.</span>
+      </div>
+      <div id="whyAnswer" hidden></div>
+      <div class="cites" id="whyCites"></div>
+    </div>
   </section>
 
   <section class="card" id="answerWrap" hidden>
@@ -131,6 +180,7 @@
 const $ = (id) => document.getElementById(id);
 let HEALTH = { mock: true, pricePerStepUSDC: "0.01", stepsPerRun: 7 };
 let currentTask = "";
+let currentReceipts = [];
 let challengeSeq = 0;
 let challengeReceipt = null;
 
@@ -155,20 +205,42 @@ async function boot() {
   const total = (Number(HEALTH.pricePerStepUSDC) * HEALTH.stepsPerRun).toFixed(2);
   $("runBtn").textContent = `Run the network ($${total})`;
   $("priceHint").textContent = `${HEALTH.stepsPerRun} reasoning steps at $${HEALTH.pricePerStepUSDC} each`;
+  const sel = $("chaosStep");
+  sel.innerHTML = "";
+  for (let i = 1; i <= HEALTH.stepsPerRun; i++) {
+    const o = document.createElement("option");
+    o.value = String(i); o.textContent = String(i);
+    if (i === 3) o.selected = true;
+    sel.appendChild(o);
+  }
 }
 
-function receiptCard(r) {
+function statusTags(r) {
+  let t = "";
+  if (r.status === "failed") t += `<span class="tag failed">failed</span>`;
+  if (r.status === "recovered") t += `<span class="tag recovered">recovered</span>`;
+  if (r.rechained) t += `<span class="tag re">re-executed</span>`;
+  return t;
+}
+
+function receiptCard(r, idx) {
   const el = document.createElement("article");
-  el.className = "receipt" + (r.rechained ? " rechained" : "");
+  const cls = "receipt" + (r.rechained ? " rechained" : "") +
+    (r.status === "failed" ? " failed" : "") + (r.status === "recovered" ? " recovered" : "");
+  el.className = cls;
+  el.id = `rc-${idx}`;
+  el.dataset.seq = String(r.seq);
+  const amtCls = r.amountUSDC === "0" ? "amt zero" : "amt";
   el.innerHTML =
     `<div class="rhead"><span class="seq">#${r.seq}</span><span class="agent">${escapeHtml(r.agent)}</span>` +
     (r.mock ? `<span class="tag mock">mock</span>` : `<span class="tag live">live sig</span>`) +
-    (r.rechained ? `<span class="tag re">re-executed</span>` : "") +
-    `<span class="amt">$${escapeHtml(r.amountUSDC)}</span></div>` +
+    statusTags(r) +
+    `<span class="${amtCls}">$${escapeHtml(r.amountUSDC)}</span></div>` +
     `<div class="rtitle">${escapeHtml(r.title)}</div>` +
     `<div class="rbody"><div><span class="k">in:</span> ${escapeHtml(r.inputSummary)}</div>` +
     `<div><span class="k">out:</span> ${escapeHtml(r.outputSummary)}</div></div>` +
-    `<div class="rtx">tx ${escapeHtml(r.txRef.slice(0, 26))}${r.txRef.length > 26 ? "..." : ""} · ${escapeHtml(r.payer.slice(0, 10))}... to ${escapeHtml(r.payee.slice(0, 10))}...</div>` +
+    (r.note ? `<div class="rnote">${escapeHtml(r.note)}</div>` : "") +
+    `<div class="rtx">tx ${escapeHtml(String(r.txRef).slice(0, 26))}${String(r.txRef).length > 26 ? "..." : ""} · hash ${escapeHtml(String(r.hash).slice(0, 12))}...</div>` +
     `<div class="rhint">Click to challenge this step</div>`;
   el.addEventListener("click", () => openChallenge(r));
   return el;
@@ -176,28 +248,36 @@ function receiptCard(r) {
 
 function renderRun(data, noteText) {
   currentTask = $("task").value;
+  currentReceipts = data.receipts;
   $("feed").innerHTML = "";
+  $("tamperOut").textContent = "";
+  $("verifyBadge").className = "badge idle";
+  $("verifyBadge").textContent = "not checked";
   $("feedWrap").hidden = false;
   $("billWrap").hidden = true;
   $("answerWrap").hidden = true;
+  $("whyAnswer").hidden = true;
+  $("whyCites").innerHTML = "";
   if (noteText) { $("note").hidden = false; $("note").textContent = noteText; }
   else { $("note").hidden = true; }
 
   // Staggered reveal: real receipt data, presented as a live feed.
   data.receipts.forEach((r, i) => {
     setTimeout(() => {
-      $("feed").appendChild(receiptCard(r));
+      $("feed").appendChild(receiptCard(r, i));
       if (i === data.receipts.length - 1) renderBill(data.bill, data.answer);
     }, 450 * (i + 1));
   });
 }
 
 function renderBill(bill, answer) {
-  const n = bill.lines.length;
-  $("billWow").textContent = `This answer cost $${bill.totalUSDC} across ${n} reasoning step${n === 1 ? "" : "s"}. Every step is receipted above.`;
+  const paid = bill.lines.filter((l) => l.status !== "failed").length;
+  $("billWow").textContent = `This answer cost $${bill.totalUSDC} across ${paid} reasoning step${paid === 1 ? "" : "s"}. Every step is receipted above.`;
   $("billBody").innerHTML =
     bill.lines.map((l) =>
-      `<tr><td>${l.seq}</td><td>${escapeHtml(l.title)}</td><td>${escapeHtml(l.agent)}</td><td class="num">$${escapeHtml(l.amountUSDC)}</td></tr>`
+      `<tr class="${l.status === "failed" ? "failedrow" : ""}"><td>${l.seq}</td>` +
+      `<td>${escapeHtml(l.title)}${l.note ? `<span class="lnote">${escapeHtml(l.note)}</span>` : ""}</td>` +
+      `<td>${escapeHtml(l.agent)}</td><td class="num">$${escapeHtml(l.amountUSDC)}</td></tr>`
     ).join("") +
     `<tr class="total"><td></td><td>Total</td><td></td><td class="num">$${escapeHtml(bill.totalUSDC)}</td></tr>`;
   $("billWrap").hidden = false;
@@ -213,14 +293,20 @@ async function runNetwork() {
   btn.disabled = true;
   btn.innerHTML = `<span class="spinner"></span> Paying for thoughts...`;
   try {
+    const body = { task };
+    if ($("chaosToggle").checked) body.chaos = { failStep: Number($("chaosStep").value) };
     const res = await fetch("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
-    renderRun(data, null);
+    const failed = data.receipts.find((r) => r.status === "failed");
+    const note = failed
+      ? `Step ${failed.seq} failed on its first attempt (simulated) and recovered on retry. The failed attempt cost $0. New total: $${data.bill.totalUSDC}.`
+      : null;
+    renderRun(data, note);
   } catch (e) {
     $("note").hidden = false;
     $("note").textContent = "Run failed: " + e.message;
@@ -229,6 +315,126 @@ async function runNetwork() {
     boot(); // restore button label
   }
 }
+
+// --- Why? ---
+
+async function askWhy() {
+  const q = $("whyQ").value.trim();
+  if (!q) return;
+  const btn = $("whyBtn");
+  btn.disabled = true;
+  btn.textContent = "Asking the chain...";
+  try {
+    const res = await fetch("/api/why", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    $("whyAnswer").hidden = false;
+    $("whyAnswer").textContent = data.answer;
+    const cites = $("whyCites");
+    cites.innerHTML = "";
+    (data.citations || []).forEach((seq) => {
+      const b = document.createElement("button");
+      b.className = "cite";
+      b.textContent = `Receipt #${seq}`;
+      b.addEventListener("click", () => jumpToReceipt(seq));
+      cites.appendChild(b);
+    });
+  } catch (e) {
+    $("whyAnswer").hidden = false;
+    $("whyAnswer").textContent = "Could not answer: " + e.message;
+    $("whyCites").innerHTML = "";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Ask why";
+  }
+}
+
+function jumpToReceipt(seq) {
+  const el = document.querySelector(`#feed .receipt[data-seq="${seq}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("flash");
+  setTimeout(() => el.classList.remove("flash"), 1600);
+}
+
+// --- Verify chain ---
+
+async function verifyChain() {
+  const badge = $("verifyBadge");
+  badge.className = "badge idle";
+  badge.textContent = "checking...";
+  try {
+    const data = await (await fetch("/api/verify")).json();
+    if (data.error) throw new Error(data.error);
+    if (data.valid) {
+      badge.className = "badge valid";
+      badge.textContent = "VALID: chain intact";
+    } else {
+      badge.className = "badge tampered";
+      badge.textContent = `TAMPERED: broken at receipt #${data.brokenAt}`;
+    }
+  } catch (e) {
+    badge.className = "badge tampered";
+    badge.textContent = "verify failed: " + e.message;
+  }
+}
+
+// --- Tamper simulation (client-side only) ---
+
+// Same canonicalization the server uses, so the local check is faithful.
+function canon(v) {
+  if (v === null || v === undefined) return "null";
+  if (Array.isArray(v)) return "[" + v.map(canon).join(",") + "]";
+  if (typeof v === "object") {
+    return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
+  }
+  return JSON.stringify(v);
+}
+
+async function sha256hex(s) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function verifyLocal(receipts) {
+  let prev = "GENESIS";
+  for (const r of receipts) {
+    if (r.prevHash !== prev) return { valid: false, brokenAt: r.seq };
+    const body = { ...r };
+    delete body.hash;
+    const h = await sha256hex(prev + canon(body));
+    if (h !== r.hash) return { valid: false, brokenAt: r.seq };
+    prev = r.hash;
+  }
+  return { valid: true };
+}
+
+async function simulateTampering() {
+  const out = $("tamperOut");
+  if (!currentReceipts.length) {
+    out.textContent = "Run the network first, then simulate.";
+    return;
+  }
+  out.textContent = "Simulating...";
+  // Sanity: the untouched copy must verify, proving the local checker matches the server.
+  const pristine = await verifyLocal(JSON.parse(JSON.stringify(currentReceipts)));
+  // Alter one receipt in a copy. The server chain is never touched.
+  const tampered = JSON.parse(JSON.stringify(currentReceipts));
+  const victim = tampered[Math.min(2, tampered.length - 1)];
+  victim.outputSummary = victim.outputSummary + " [edited by attacker]";
+  const result = await verifyLocal(tampered);
+  out.innerHTML =
+    `Pristine copy: <b>${pristine.valid ? "VALID" : "BROKEN"}</b> (local checker agrees with the server).<br>` +
+    (result.valid
+      ? "Tampered copy: still valid, which should never happen."
+      : `Tampered copy: receipt #${result.brokenAt} hash mismatch. Verification would report <b>{ valid: false, brokenAt: ${result.brokenAt} }</b>. One edited character breaks the chain from that point on.`);
+}
+
+// --- Challenge flow ---
 
 function openChallenge(r) {
   challengeSeq = r.seq;
@@ -278,6 +484,10 @@ async function submitChallenge() {
 $("runBtn").addEventListener("click", runNetwork);
 $("chClose").addEventListener("click", closeChallenge);
 $("chRun").addEventListener("click", submitChallenge);
+$("whyBtn").addEventListener("click", askWhy);
+$("whyQ").addEventListener("keydown", (e) => { if (e.key === "Enter") askWhy(); });
+$("verifyBtn").addEventListener("click", verifyChain);
+$("tamperBtn").addEventListener("click", simulateTampering);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeChallenge();
 });
