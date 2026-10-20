@@ -99,7 +99,7 @@ export async function answerWhy(receipts: Receipt[], question: string): Promise<
 
   if (scored.length === 0) {
     return {
-      answer: `I could not find anything in the receipt chain about "${q}". Try asking about a hotel, a budget number, or a step the agents took.`,
+      answer: `I could not find anything in the receipt chain about "${q}". Try asking about a vendor, a TCO number, or a step the agents took.`,
       citations: [],
     };
   }

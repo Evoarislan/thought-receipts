@@ -4,6 +4,10 @@
  * execute behind a $0.01 x402 paywall. Every step pays first, reasons second,
  * and emits a receipt third. The receipt chain is the explanation of "why".
  *
+ * Demo scenario: vendor selection for a cloud infrastructure contract. The
+ * receipt chain explains a decision with real dollars behind it: quotes in,
+ * 3-year total cost of ownership out, recommendation with the math attached.
+ *
  * Reasoning is deterministic mock logic so the demo runs with zero API keys.
  * LLM adapter seam: replace any executor's body with a call to
  * reasonWithModel() later; the receipt shape stays identical.
@@ -15,18 +19,23 @@ export const STEP_COUNT = 7;
 export const PRICE_PER_STEP = PRICE_PER_STEP_USDC;
 
 export type AgentName = "coordinator" | "research" | "compute" | "synthesize";
-export type Tier = "budget" | "standard" | "luxury";
 
-export interface Priced {
+export interface Vendor {
   name: string;
-  price: number;
-  note: string;
+  headlineAnnual: number;
+  egressPerGB: number;
+  /** TB/yr included at egressPerGB; null means no cap. */
+  egressCapTB: number | null;
+  egressOveragePerGB: number;
+  supportAnnual: number;
+  supportTier: string;
+  sla: string;
+  differentiator: string;
 }
 
 export interface TaskProfile {
-  destination: string;
-  days: number;
-  budget: number;
+  contractAnnual: number;
+  termYears: number;
 }
 
 /**
@@ -40,123 +49,114 @@ export async function reasonWithModel(_prompt: string): Promise<string> {
   );
 }
 
-export function detectTier(text: string): Tier {
-  const t = text.toLowerCase();
-  if (/luxury|premium|5-star|five star|finest|best/.test(t)) return "luxury";
-  if (/budget|cheap|backpack|hostel|cheapest|lowest/.test(t)) return "budget";
-  return "standard";
-}
-
 export function parseTask(task: string): TaskProfile {
   const t = task.toLowerCase();
-  const days = /(\d+)\s*-?\s*day/.exec(t);
-  const budget = /\$\s*([\d,]+)/.exec(t);
-  const destination = /tokyo/.test(t)
-    ? "Tokyo"
-    : /paris/.test(t)
-      ? "Paris"
-      : /london/.test(t)
-        ? "London"
-        : /new york/.test(t)
-          ? "New York"
-          : "your destination";
+  const money = /\$\s*([\d,]+(?:\.\d+)?)\s*([km])?/.exec(t);
+  let contractAnnual = 60000;
+  if (money) {
+    const n = parseFloat(money[1].replace(/,/g, ""));
+    const mult = money[2] === "k" ? 1000 : money[2] === "m" ? 1000000 : 1;
+    contractAnnual = Math.round(n * mult);
+  }
+  const term = /(\d+)\s*-?\s*year/.exec(t);
   return {
-    destination,
-    days: days ? Math.min(14, Math.max(1, parseInt(days[1], 10))) : 3,
-    budget: budget ? parseInt(budget[1].replace(/,/g, ""), 10) : 1500,
+    contractAnnual,
+    termYears: term ? Math.min(10, Math.max(1, parseInt(term[1], 10))) : 3,
   };
 }
 
-function fmt(n: number): string {
-  return n % 1 === 0 ? `$${n}` : `$${n.toFixed(2)}`;
+/**
+ * Annual data transfer in TB, parsed from step input. The challenge flow
+ * overrides a step's input, so "double the data transfer volume" typed into
+ * the challenge panel lands here and re-prices everything downstream.
+ */
+export function parseVolumeTB(text: string): number {
+  const t = text.toLowerCase();
+  const explicit = /(\d+(?:\.\d+)?)\s*tb/.exec(t);
+  if (explicit) return Math.min(10000, Math.max(1, parseFloat(explicit[1])));
+  if (/triple|3x|three times/.test(t)) return 1200;
+  if (/double|2x|twice/.test(t)) return 800;
+  if (/half/.test(t)) return 200;
+  return 400;
 }
 
-// --- Option catalogs --------------------------------------------------------
+function fmt(n: number): string {
+  return n % 1 === 0 ? `$${n.toLocaleString("en-US")}` : `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
 
-const TOKYO_HOTELS: Record<Tier, Priced[]> = {
-  budget: [
-    { name: "Hostel Khaosan Asakusa", price: 35, note: "dorm bed, shared bath" },
-    { name: "Capsule Hotel Anshin Oyado Shinjuku", price: 45, note: "capsule pod, sauna included" },
-    { name: "Toyoko Inn Ueno", price: 85, note: "business hotel, breakfast included" },
-  ],
-  standard: [
-    { name: "Sakura Hotel Ikebukuro", price: 95, note: "boutique, English speaking staff" },
-    { name: "Richmond Hotel Asakusa", price: 120, note: "riverside, Skytree views" },
-    { name: "Hotel Gracery Shinjuku", price: 140, note: "landmark Godzilla head" },
-  ],
-  luxury: [
-    { name: "The Ritz-Carlton Tokyo", price: 480, note: "52nd floor, Tokyo Midtown" },
-    { name: "Park Hyatt Tokyo", price: 550, note: "New York Bar, skyline views" },
-    { name: "Aman Tokyo", price: 700, note: "Otemachi Tower, washi paper interiors" },
-  ],
-};
+function fmtK(n: number): string {
+  return `$${Math.round(n / 1000)}K`;
+}
 
-const TOKYO_ACTIVITIES: Priced[] = [
-  { name: "Senso-ji Temple and Nakamise", price: 0, note: "Asakusa, free" },
-  { name: "teamLab Planets", price: 25, note: "Toyosu, timed entry" },
-  { name: "Day trip to Kamakura", price: 15, note: "train from Shinjuku" },
-  { name: "Sushi lunch at Tsukiji outer market", price: 40, note: "street food crawl" },
-  { name: "Meiji Shrine and Yoyogi Park", price: 0, note: "Harajuku, free" },
-  { name: "Shibuya crossing at night", price: 0, note: "evening, free" },
+// --- Vendor catalog ----------------------------------------------------------
+// Fictional vendors and illustrative quotes. Not real prices from real
+// companies; the point is the shape of the decision, not the numbers.
+
+const VENDORS: Vendor[] = [
+  {
+    name: "Nimbus Cloud",
+    headlineAnnual: 48000,
+    egressPerGB: 0.12,
+    egressCapTB: null,
+    egressOveragePerGB: 0.12,
+    supportAnnual: 6000,
+    supportTier: "business-hours ticket queue",
+    sla: "99.9%",
+    differentiator: "cheapest headline compute price",
+  },
+  {
+    name: "Stratus Systems",
+    headlineAnnual: 54000,
+    egressPerGB: 0.04,
+    egressCapTB: 500,
+    egressOveragePerGB: 0.2,
+    supportAnnual: 9000,
+    supportTier: "24/7 engineer hotline",
+    sla: "99.99%",
+    differentiator: "flat low egress rate inside a 500TB/yr cap, premium support",
+  },
+  {
+    name: "Cirrus Compute",
+    headlineAnnual: 60000,
+    egressPerGB: 0.09,
+    egressCapTB: null,
+    egressOveragePerGB: 0.09,
+    supportAnnual: 4000,
+    supportTier: "community forum plus tickets",
+    sla: "99.95%",
+    differentiator: "no egress cap, predictable cost at any scale",
+  },
 ];
 
-const TOKYO_TRANSPORT: Priced[] = [
-  { name: "72-hour Tokyo subway pass", price: 15, note: "unlimited metro" },
-  { name: "Narita Express round trip", price: 40, note: "airport transfer" },
-  { name: "Suica top-up buffer", price: 20, note: "JR lines and buses" },
-];
+export interface TcoRow {
+  vendor: Vendor;
+  egressAnnual: number;
+  annual: number;
+  tco: number;
+}
 
-const GENERIC_HOTELS: Record<Tier, Priced[]> = {
-  budget: [
-    { name: "Downtown backpacker hostel", price: 30, note: "dorm bed" },
-    { name: "Capsule pod hotel", price: 45, note: "pod, shared lounge" },
-    { name: "Budget business hotel", price: 80, note: "compact room, wifi" },
-  ],
-  standard: [
-    { name: "Central 3-star hotel", price: 110, note: "near transit" },
-    { name: "Boutique guesthouse", price: 130, note: "local character" },
-    { name: "Riverside 4-star hotel", price: 160, note: "city views" },
-  ],
-  luxury: [
-    { name: "Grand palace hotel", price: 450, note: "5-star, spa" },
-    { name: "Skyline suite hotel", price: 600, note: "top floor suites" },
-    { name: "Private villa resort", price: 800, note: "concierge, private pool" },
-  ],
-};
-
-const GENERIC_ACTIVITIES: Priced[] = [
-  { name: "Old town walking tour", price: 0, note: "self guided, free" },
-  { name: "Signature museum", price: 20, note: "timed entry" },
-  { name: "Local food market crawl", price: 35, note: "street food" },
-  { name: "Sunset viewpoint", price: 0, note: "free" },
-  { name: "Day trip to nearby town", price: 18, note: "regional train" },
-];
-
-const GENERIC_TRANSPORT: Priced[] = [
-  { name: "3-day transit pass", price: 18, note: "unlimited local transit" },
-  { name: "Airport transfer round trip", price: 35, note: "express train" },
-  { name: "Ride buffer", price: 20, note: "late night taxis" },
-];
-
-function perDiem(tier: Tier): number {
-  return tier === "luxury" ? 150 : tier === "budget" ? 35 : 60;
+export function computeTCO(v: Vendor, volumeTB: number, termYears: number): TcoRow {
+  const gb = volumeTB * 1000;
+  let egressAnnual: number;
+  if (v.egressCapTB !== null && volumeTB > v.egressCapTB) {
+    const cappedGB = v.egressCapTB * 1000;
+    egressAnnual = cappedGB * v.egressPerGB + (gb - cappedGB) * v.egressOveragePerGB;
+  } else {
+    egressAnnual = gb * v.egressPerGB;
+  }
+  const annual = v.headlineAnnual + egressAnnual + v.supportAnnual;
+  return { vendor: v, egressAnnual: Math.round(egressAnnual), annual: Math.round(annual), tco: Math.round(annual * termYears) };
 }
 
 // --- Pipeline context -------------------------------------------------------
 
 interface Ctx {
   profile: TaskProfile;
-  tier: Tier;
-  hotels: Priced[];
-  activities: Priced[];
-  transport: Priced[];
-  hotel?: Priced;
-  acts: Priced[];
-  trans: Priced[];
-  lines: string[];
-  total: number;
-  verdict: string;
-  itinerary: string;
+  volumeTB: number;
+  tcoRows: TcoRow[];
+  winner?: TcoRow;
+  termsNote: string;
+  recommendation: string;
   finalAnswer: string;
 }
 
@@ -179,8 +179,20 @@ function summarize(s: string, max = 140): string {
   return oneLine.length > max ? `${oneLine.slice(0, max - 3)}...` : oneLine;
 }
 
-function pricedList(items: Priced[]): string {
-  return items.map((p) => `- ${p.name}: ${fmt(p.price)} (${p.note})`).join("\n");
+function quoteCard(v: Vendor): string {
+  const cap = v.egressCapTB === null ? "no cap" : `first ${v.egressCapTB}TB/yr at this rate, then ${fmt(v.egressOveragePerGB)}/GB overage`;
+  return (
+    `- ${v.name}: compute ${fmt(v.headlineAnnual)}/yr, egress ${fmt(v.egressPerGB)}/GB (${cap}), ` +
+    `support ${fmt(v.supportAnnual)}/yr (${v.supportTier}), SLA ${v.sla}. Edge: ${v.differentiator}.`
+  );
+}
+
+function tcoTable(rows: TcoRow[], volumeTB: number, termYears: number): string {
+  const lines = rows.map(
+    (r) =>
+      `- ${r.vendor.name}: compute ${fmt(r.vendor.headlineAnnual)} + egress ${fmt(r.egressAnnual)} + support ${fmt(r.vendor.supportAnnual)} = ${fmt(r.annual)}/yr x ${termYears} yrs = ${fmtK(r.tco)} TCO`
+  );
+  return `3-year TCO at ${volumeTB}TB/yr egress:\n${lines.join("\n")}`;
 }
 
 const STEP_DEFS: StepDef[] = [
@@ -192,15 +204,15 @@ const STEP_DEFS: StepDef[] = [
     buildInput: (_ctx, task) => task,
     execute: (_ctx, input) => {
       const plan = [
-        "1) research lodging options",
-        "2) research activities and food",
-        "3) research transport",
-        "4) verify the total against the budget",
-        "5) write the day-by-day itinerary",
+        "1) research vendor quotes",
+        "2) profile the workload (transfer volume, term)",
+        "3) check contract terms, SLAs, and support",
+        "4) compute 3-year total cost of ownership per vendor",
+        "5) write the recommendation with rationale",
         "6) assemble the final answer",
       ].join("\n");
       return {
-        outputSummary: "Planned 6 subtasks: research x3, budget check, synthesis, final assembly.",
+        outputSummary: "Planned 6 subtasks: vendor quotes, workload profile, terms check, TCO math, recommendation, final assembly.",
         detail: `Task: "${summarize(input, 200)}"\n\nExecution plan:\n${plan}\n\nEach reasoning step below is a paid x402 call at $${PRICE_PER_STEP.toFixed(2)}.`,
       };
     },
@@ -208,115 +220,109 @@ const STEP_DEFS: StepDef[] = [
   {
     seq: 2,
     agent: "research",
-    step: "gather-lodging",
-    title: "Research lodging options",
-    buildInput: (ctx, task) => `${task} :: lodging options for ${ctx.profile.days} nights`,
-    execute: (ctx, input) => {
-      const tier = detectTier(input);
-      ctx.tier = tier;
-      const catalog = ctx.profile.destination === "Tokyo" ? TOKYO_HOTELS : GENERIC_HOTELS;
-      ctx.hotels = catalog[tier];
-      // Deterministic pick: cheapest for budget, middle of the list otherwise.
-      ctx.hotel = ctx.hotels[tier === "budget" ? 0 : 1];
+    step: "gather-quotes",
+    title: "Research vendor quotes",
+    buildInput: (ctx, task) => `${task} :: quotes for ${fmt(ctx.profile.contractAnnual)}/yr cloud infrastructure`,
+    execute: (_ctx, _input) => {
       return {
-        outputSummary: `Found 3 ${tier} options. Picked "${ctx.hotel.name}" at ${fmt(ctx.hotel.price)}/night.`,
-        detail: `Tier detected from input: ${tier}.\n\nOptions:\n${pricedList(ctx.hotels)}\n\nPicked: ${ctx.hotel.name} (${ctx.hotel.note}).`,
+        outputSummary: `Gathered quotes from ${VENDORS.map((v) => v.name).join(", ")}. Cheapest headline: Nimbus Cloud at ${fmt(48000)}/yr.`,
+        detail:
+          `Vendor quotes (fictional vendors, illustrative pricing):\n` +
+          VENDORS.map(quoteCard).join("\n") +
+          `\n\nAll three headlines fit inside the ${fmt(60000)}/yr compute budget, so headline price alone cannot decide this.`,
       };
     },
   },
   {
     seq: 3,
     agent: "research",
-    step: "gather-activities",
-    title: "Research activities and food",
-    buildInput: (ctx, task) => `${task} :: activities and food worth the time`,
-    execute: (ctx, _input) => {
-      const catalog = ctx.profile.destination === "Tokyo" ? TOKYO_ACTIVITIES : GENERIC_ACTIVITIES;
-      ctx.activities = catalog;
-      ctx.acts = catalog.slice(0, 4);
-      const free = ctx.acts.filter((a) => a.price === 0).length;
+    step: "profile-workload",
+    title: "Profile the workload",
+    buildInput: (_ctx, task) => `${task} :: workload profile: annual data transfer volume in TB, contract term, primary region`,
+    execute: (ctx, input) => {
+      ctx.volumeTB = parseVolumeTB(input);
       return {
-        outputSummary: `Shortlisted ${ctx.acts.length} activities, ${free} of them free.`,
-        detail: `Shortlist:\n${pricedList(ctx.acts)}`,
+        outputSummary: `Workload: ${ctx.volumeTB}TB/yr data transfer, ${ctx.profile.termYears}-year term, primary region us-east.`,
+        detail:
+          `Workload profile:\n` +
+          `- Annual data transfer (egress): ${ctx.volumeTB}TB/yr\n` +
+          `- Contract term: ${ctx.profile.termYears} years\n` +
+          `- Primary region: us-east\n` +
+          `- Compute budget: ${fmt(ctx.profile.contractAnnual)}/yr\n\n` +
+          `Egress volume is the swing factor: it decides whether metered or capped pricing wins.`,
       };
     },
   },
   {
     seq: 4,
     agent: "research",
-    step: "gather-transport",
-    title: "Research transport",
-    buildInput: (ctx, task) => `${task} :: transport for ${ctx.profile.days} days`,
+    step: "check-terms",
+    title: "Check contract terms and support",
+    buildInput: (ctx) => `contract terms for ${VENDORS.map((v) => v.name).join(", ")} at ${ctx.volumeTB}TB/yr`,
     execute: (ctx, _input) => {
-      ctx.transport = ctx.profile.destination === "Tokyo" ? TOKYO_TRANSPORT : GENERIC_TRANSPORT;
-      ctx.trans = ctx.transport;
+      ctx.termsNote =
+        `Nimbus Cloud: SLA ${VENDORS[0].sla}, ${VENDORS[0].supportTier}. Egress is uncapped and metered at the highest rate (${fmt(0.12)}/GB): ` +
+        `at ${ctx.volumeTB}TB/yr egress alone costs ${fmt(Math.round(ctx.volumeTB * 1000 * 0.12))}/yr, more than the compute. Annual commit with auto-renew.\n` +
+        `Stratus Systems: SLA ${VENDORS[1].sla}, ${VENDORS[1].supportTier}. Egress ${fmt(0.04)}/GB is included up to 500TB/yr, ` +
+        `then ${fmt(0.2)}/GB overage. ${ctx.volumeTB <= 500 ? `At ${ctx.volumeTB}TB/yr the workload sits inside the cap with room to grow.` : `At ${ctx.volumeTB}TB/yr the workload EXCEEDS the 500TB cap; overage fees apply and erase the rate advantage.`}\n` +
+        `Cirrus Compute: SLA ${VENDORS[2].sla}, ${VENDORS[2].supportTier}. Egress ${fmt(0.09)}/GB with no cap: predictable at any scale, weakest support tier. Fine for a team with in-house ops.`;
       return {
-        outputSummary: `Priced ${ctx.trans.length} transport legs.`,
-        detail: `Transport:\n${pricedList(ctx.trans)}`,
+        outputSummary: "Terms checked. Flag: Nimbus egress is uncapped at the highest metered rate; Stratus pricing hinges on the 500TB cap.",
+        detail: `Contract terms and risk flags:\n${ctx.termsNote}`,
       };
     },
   },
   {
     seq: 5,
     agent: "compute",
-    step: "check-budget",
-    title: "Verify the budget",
+    step: "compute-tco",
+    title: "Compute 3-year TCO per vendor",
     buildInput: (ctx) =>
-      `lodging ${ctx.hotel?.name} ${fmt(ctx.hotel?.price ?? 0)} x ${ctx.profile.days} nights; ` +
-      `activities ${ctx.acts.map((a) => `${a.name} ${fmt(a.price)}`).join(", ")}; ` +
-      `transport ${ctx.trans.map((t) => `${t.name} ${fmt(t.price)}`).join(", ")}; ` +
-      `budget cap ${fmt(ctx.profile.budget)}`,
+      `3-year TCO for ${VENDORS.map((v) => v.name).join(", ")} at ${ctx.volumeTB}TB/yr egress, ` +
+      `compute plus egress plus support`,
     execute: (ctx, _input) => {
-      const days = ctx.profile.days;
-      const hotel = ctx.hotel ?? { name: "undecided", price: 0, note: "" };
-      const lodging = hotel.price * days;
-      const food = perDiem(ctx.tier) * days;
-      const acts = ctx.acts.reduce((s, a) => s + a.price, 0);
-      const trans = ctx.trans.reduce((s, t) => s + t.price, 0);
-      ctx.total = lodging + food + acts + trans;
-      const diff = ctx.profile.budget - ctx.total;
-      ctx.verdict =
-        diff >= 0
-          ? `Under budget by ${fmt(diff)}.`
-          : `Over budget by ${fmt(-diff)}. The plan needs cheaper picks.`;
-      ctx.lines = [
-        `Lodging: ${hotel.name} ${fmt(hotel.price)} x ${days} nights = ${fmt(lodging)}`,
-        `Food: ${fmt(perDiem(ctx.tier))}/day x ${days} days = ${fmt(food)}`,
-        `Activities: ${fmt(acts)}`,
-        `Transport: ${fmt(trans)}`,
-        `Total: ${fmt(ctx.total)} vs ${fmt(ctx.profile.budget)} cap`,
-        ctx.verdict,
-      ];
+      const rows = VENDORS.map((v) => computeTCO(v, ctx.volumeTB, ctx.profile.termYears));
+      rows.sort((a, b) => a.tco - b.tco);
+      ctx.tcoRows = rows;
+      ctx.winner = rows[0];
+      const order = rows.map((r) => `${r.vendor.name} ${fmtK(r.tco)}`).join(", ");
       return {
-        outputSummary: `Checked "${hotel.name}": total ${fmt(ctx.total)} vs ${fmt(ctx.profile.budget)} cap. ${ctx.verdict}`,
-        detail: `Budget check (${ctx.tier} tier):\n${ctx.lines.map((l) => `- ${l}`).join("\n")}`,
+        outputSummary: `${ctx.profile.termYears}-year TCO at ${ctx.volumeTB}TB/yr: ${order}. Winner: ${ctx.winner.vendor.name}.`,
+        detail:
+          tcoTable(rows, ctx.volumeTB, ctx.profile.termYears) +
+          `\n\nWinner on total cost: ${ctx.winner.vendor.name} at ${fmtK(ctx.winner.tco)}. ` +
+          `Headline price misleads: the cheapest headline (Nimbus Cloud, ${fmt(48000)}/yr) finishes ` +
+          `${rows.findIndex((r) => r.vendor.name === "Nimbus Cloud") + 1} of 3 because egress dominates the total.`,
       };
     },
   },
   {
     seq: 6,
     agent: "synthesize",
-    step: "write-itinerary",
-    title: "Write the itinerary",
-    buildInput: (ctx) => `picks plus budget verdict: ${ctx.verdict}`,
+    step: "write-recommendation",
+    title: "Write the recommendation",
+    buildInput: (ctx) => `recommendation from TCO: winner ${ctx.winner?.vendor.name ?? "undecided"}`,
     execute: (ctx, _input) => {
-      const { profile, hotel, acts, trans } = ctx;
-      const h = hotel ?? { name: "undecided", price: 0, note: "" };
-      const lines: string[] = [
-        `Base: ${h.name} (${fmt(h.price)}/night, ${h.note}).`,
-        `Getting around: ${trans.map((t) => `${t.name} (${fmt(t.price)})`).join(", ")}.`,
-      ];
-      for (let d = 1; d <= profile.days; d++) {
-        const act = acts[(d - 1) % Math.max(acts.length, 1)];
-        const actText = act
-          ? `${act.name} (${act.price === 0 ? "free" : fmt(act.price)}, ${act.note})`
-          : "free exploration";
-        lines.push(`Day ${d}: ${actText}. Food budget ${fmt(perDiem(ctx.tier))}.`);
+      const w = ctx.winner;
+      const rows = ctx.tcoRows;
+      const runnerUp = rows[1];
+      const nimbus = rows.find((r) => r.vendor.name === "Nimbus Cloud");
+      if (!w || !runnerUp || !nimbus) {
+        ctx.recommendation = "TCO not computed; cannot recommend.";
+      } else {
+        const savingVsRunnerUp = w.tco === runnerUp.tco ? 0 : runnerUp.tco - w.tco;
+        ctx.recommendation =
+          `Recommend ${w.vendor.name} for the ${ctx.profile.termYears}-year contract.\n` +
+          `Rationale: ${ctx.profile.termYears}-year TCO of ${fmtK(w.tco)} at ${ctx.volumeTB}TB/yr egress, ` +
+          `${fmtK(savingVsRunnerUp)} below ${runnerUp.vendor.name} (${fmtK(runnerUp.tco)}). ` +
+          `Nimbus Cloud has the cheapest headline (${fmt(48000)}/yr) but finishes at ${fmtK(nimbus.tco)} because its uncapped ` +
+          `${fmt(0.12)}/GB egress costs ${fmt(nimbus.egressAnnual)}/yr at this volume. All three headlines fit the ${fmt(ctx.profile.contractAnnual)}/yr ` +
+          `compute budget, so the decision comes down to total cost, where ${w.vendor.name}'s ${w.vendor.differentiator} wins. ` +
+          `${w.vendor.name} also carries the strongest support tier (${w.vendor.supportTier}) and SLA (${w.vendor.sla}).`;
       }
-      ctx.itinerary = lines.join("\n");
       return {
-        outputSummary: `${profile.days}-day plan drafted around "${h.name}".`,
-        detail: `${profile.days}-day ${profile.destination} itinerary (${ctx.tier} tier):\n${ctx.itinerary}`,
+        outputSummary: `Recommends ${w?.vendor.name ?? "nobody"}: ${w ? `${fmtK(w.tco)} TCO, ${fmtK(runnerUp!.tco - w.tco)} under the runner-up` : "no winner"}.`,
+        detail: ctx.recommendation,
       };
     },
   },
@@ -325,16 +331,16 @@ const STEP_DEFS: StepDef[] = [
     agent: "coordinator",
     step: "finalize",
     title: "Assemble the final answer",
-    buildInput: (ctx) => `itinerary draft plus ${fmt(ctx.total)} total`,
+    buildInput: (ctx) => `final answer: recommend ${ctx.winner?.vendor.name ?? "undecided"} at ${ctx.winner ? fmtK(ctx.winner.tco) : "?"}`,
     execute: (ctx, _input) => {
       const { profile } = ctx;
       ctx.finalAnswer =
-        `${profile.days}-day ${profile.destination} itinerary (${ctx.tier} tier).\n` +
-        `Total ${fmt(ctx.total)} against a ${fmt(profile.budget)} budget. ${ctx.verdict}\n\n` +
-        `${ctx.itinerary}\n\n` +
+        `Vendor recommendation for the ${fmt(profile.contractAnnual)}/yr cloud infrastructure contract (${profile.termYears}-year term, ${ctx.volumeTB}TB/yr egress).\n\n` +
+        `${ctx.recommendation}\n\n` +
+        `${tcoTable(ctx.tcoRows, ctx.volumeTB, profile.termYears)}\n\n` +
         `Paid for with ${STEP_COUNT} receipted reasoning steps. The receipt chain above is the full explanation of how this answer was built.`;
       return {
-        outputSummary: "Final answer assembled with cost summary.",
+        outputSummary: "Final answer assembled with TCO table and recommendation.",
         detail: ctx.finalAnswer,
       };
     },
@@ -365,16 +371,10 @@ export async function runPipeline(
 
   const ctx: Ctx = {
     profile: parseTask(clean),
-    tier: detectTier(clean),
-    hotels: [],
-    activities: [],
-    transport: [],
-    acts: [],
-    trans: [],
-    lines: [],
-    total: 0,
-    verdict: "",
-    itinerary: "",
+    volumeTB: 400,
+    tcoRows: [],
+    termsNote: "",
+    recommendation: "",
     finalAnswer: "",
   };
 

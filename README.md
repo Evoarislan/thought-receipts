@@ -8,16 +8,30 @@ A coordinator agent breaks your task into subtasks. Three specialist agents (res
 
 The "why" is the receipt chain. Ask why the agent did something, and it shows you the receipt for the exact reasoning step: what it was paid, what it was told, what it produced.
 
+## Why this task
+
+The demo task is vendor selection for a $60K annual cloud infrastructure contract. That is deliberate. The event brief asks for production-oriented agents that solve meaningful problems for real users, not another demo. Procurement decisions carry real money, and they are exactly where explainability has economic value: "why did you pick vendor B?" should have an answer backed by math, not vibes. The receipt chain turns a $237K recommendation into an auditable artifact. A travel itinerary could never do that.
+
 Three things make it memorable:
 
 1. **The itemized bill for thinking.** When the agent answers, you see exactly what the thought cost: "This answer cost $0.07 across 7 reasoning steps." Nobody has shown a receipt for an agent's thought process before.
-2. **Challenge a step.** Click any receipt, edit that step's input, and watch the downstream chain re-execute. Change "budget traveler" to "luxury traveler" at the lodging step and watch the hotel pick, the budget total, and the itinerary all rewrite themselves.
+2. **Challenge a step.** Click any receipt, edit that step's input, and watch the downstream chain re-execute. Double the data transfer volume at the workload step and watch the winner flip from Stratus Systems to Cirrus Compute as the egress math reprices itself.
 3. **Tamper-evident receipts.** Every receipt is hash-chained (sha256 over the previous hash plus the receipt body). Edit one character and verification breaks downstream of the edit. The **Verify chain** button proves it live.
 
 Two more demo beats:
 
-- **Ask why.** A "Why?" box answers questions about the run in plain English, grounded in the receipt chain with clickable citations. Try: "why did you pick the Park Hyatt?"
+- **Ask why.** A "Why?" box answers questions about the run in plain English, grounded in the receipt chain with clickable citations. Try: "why did you pick Stratus Systems?"
 - **Break and recover.** Tick "Simulate a step failure" before running. That step's first attempt fails (a $0 receipt records the timeout), the coordinator retries automatically (a "recovered" receipt records the retry), and the pipeline completes. The bill still totals $0.07.
+
+## The non-obvious winner
+
+Three fictional vendors quote for the contract (illustrative pricing, not real quotes):
+
+- **Nimbus Cloud**: cheapest headline at $48K/yr compute, but uncapped egress metered at $0.12/GB.
+- **Stratus Systems**: $54K/yr compute, egress $0.04/GB included up to 500TB/yr then $0.20/GB overage, 24/7 engineer support.
+- **Cirrus Compute**: $60K/yr compute, egress $0.09/GB with no cap.
+
+At 400TB/yr the 3-year TCOs are Stratus $237K, Cirrus $300K, Nimbus $306K. The cheapest headline loses because egress dominates the total. Double the transfer volume to 800TB/yr and Stratus blows through its 500TB cap into punitive overage: Cirrus wins at $408K against Stratus $429K and Nimbus $450K. The obvious pick is not the right pick, and the receipt chain shows exactly why, in dollars.
 
 ## Track fit
 
@@ -26,20 +40,20 @@ Track 2 asks for the agent that can explain why. Most entries will bolt an expla
 ## How it works
 
 ```
-task
+task: "Select a vendor for our $60K annual cloud infrastructure contract."
   |
   v
 coordinator.decompose ......... $0.01 -> receipt #1
   |
-  +--> research.gather-lodging .... $0.01 -> receipt #2
-  +--> research.gather-activities . $0.01 -> receipt #3
-  +--> research.gather-transport .. $0.01 -> receipt #4
+  +--> research.gather-quotes .... $0.01 -> receipt #2
+  +--> research.profile-workload . $0.01 -> receipt #3
+  +--> research.check-terms ...... $0.01 -> receipt #4
   |
   v
-compute.check-budget ........... $0.01 -> receipt #5
+compute.compute-tco ............ $0.01 -> receipt #5
   |
   v
-synthesize.write-itinerary ..... $0.01 -> receipt #6
+synthesize.write-recommendation  $0.01 -> receipt #6
   |
   v
 coordinator.finalize ........... $0.01 -> receipt #7
@@ -58,7 +72,7 @@ npm run build
 npm start
 ```
 
-Open http://localhost:3003. The demo task is prefilled: "Plan a 3-day Tokyo itinerary under $1500".
+Open http://localhost:3003. The demo task is prefilled: "Select a vendor for our $60K annual cloud infrastructure contract.".
 
 API:
 
@@ -79,14 +93,15 @@ In live mode the buyer signs a real authorization per step. Signed, not submitte
 
 ## Demo script for judges
 
-1. Click **Run the network** with the default Tokyo task. Watch 7 receipts appear in the feed, each a $0.01 payment with payer, payee, and signature ref.
+1. Click **Run the network** with the default vendor task. Watch 7 receipts appear in the feed, each a $0.01 payment with payer, payee, and signature ref.
 2. Read the itemized bill: "This answer cost $0.07 across 7 reasoning steps."
-3. Click receipt **#2 (Research lodging options)**. Change its input to "luxury traveler, 5-star hotels only". Click **Re-run from this step**.
-4. Watch steps 2 through 7 re-execute (marked "re-executed"): the hotel pick jumps to Park Hyatt tier pricing, the budget total jumps with it, the itinerary rewrites. The bill updates. Steps 1 stays unchanged.
-5. Ask **"why did you pick the Park Hyatt?"** in the Why box. The answer cites receipts #2, #5, #6. Click a citation chip to jump to that receipt.
-6. Click **Verify chain**: the badge reads VALID. Then click **Simulate tampering** (client-side only): a copy of one receipt is edited, and the local checker reports `{ valid: false, brokenAt: 3 }`. One edited character breaks the chain from that point on.
-7. Tick **"Simulate a step failure"** and run again: step 3's first attempt fails (a red $0 receipt records the timeout), the retry succeeds (green "recovered" badge), the pipeline completes, and the bill still totals $0.07.
-8. Point at the mock banner: all payments are simulated in this demo; flip `MOCK=false` for real EIP-3009 signatures.
+3. Read the recommendation: **Stratus Systems at $237K 3-year TCO**, beating Cirrus ($300K) and Nimbus ($306K). Point out the twist: Nimbus has the cheapest headline price ($48K/yr) and still finishes last, because its uncapped $0.12/GB egress costs $48K/yr at this volume. The obvious pick is not the right pick.
+4. Click receipt **#3 (Profile the workload)**. Change its input to "double the data transfer volume". Click **Re-run from this step**.
+5. Watch steps 3 through 7 re-execute (marked "re-executed"): the TCO table reprices at 800TB/yr, Stratus blows through its 500TB egress cap into $0.20/GB overage, and the winner flips to **Cirrus Compute at $408K** (Stratus $429K, Nimbus $450K). Steps 1 and 2 stay unchanged.
+6. Ask **"why did you pick Stratus Systems?"** in the Why box. The answer cites the compute and recommendation receipts with the TCO numbers. Click a citation chip to jump to that receipt.
+7. Click **Verify chain**: the badge reads VALID. Then click **Simulate tampering** (client-side only): a copy of one receipt is edited, and the local checker reports `{ valid: false, brokenAt: 3 }`. One edited character breaks the chain from that point on.
+8. Tick **"Simulate a step failure"** and run again: step 2's first attempt fails (a red $0 receipt records the timeout), the retry succeeds (green "recovered" badge), the pipeline completes, and the bill still totals $0.07.
+9. Point at the mock banner: all payments are simulated in this demo; flip `MOCK=false` for real EIP-3009 signatures. Vendor names and quotes are fictional and illustrative.
 
 ## Repo layout
 
