@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thought Receipts: the pay-per-thought agent network</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #12161f; --line: #232a3a;
+    --text: #e6e9f0; --dim: #9aa3b2;
+    --green: #6ee7a0; --amber: #f5b942; --blue: #7cc4ff; --violet: #c4a7ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 28px 24px 8px; max-width: 980px; margin: 0 auto; }
+  header h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: -0.5px; }
+  header h1 .tick { color: var(--green); }
+  header p { margin: 0; color: var(--dim); max-width: 640px; line-height: 1.5; }
+  .banner { max-width: 980px; margin: 16px auto 0; padding: 10px 16px; border-radius: 10px;
+    font-size: 13px; line-height: 1.5; }
+  .banner.mock { background: rgba(245,185,66,.12); border: 1px solid rgba(245,185,66,.45); color: #f7cf7d; }
+  .banner.live { background: rgba(110,231,160,.10); border: 1px solid rgba(110,231,160,.45); color: #a9f0c6; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 24px 80px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 18px; }
+  .card h2 { margin: 0 0 12px; font-size: 16px; }
+  label { display: block; font-size: 13px; color: var(--dim); margin-bottom: 8px; }
+  textarea { width: 100%; background: #0d1119; color: var(--text); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px; font-size: 15px; resize: vertical; }
+  textarea:focus { outline: none; border-color: var(--green); }
+  .row { display: flex; align-items: center; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
+  button { background: var(--green); color: #06130b; border: none; border-radius: 10px;
+    padding: 12px 20px; font-size: 15px; font-weight: 700; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: wait; }
+  button.ghost { background: transparent; color: var(--dim); border: 1px solid var(--line); font-weight: 500; }
+  .hint { font-size: 13px; color: var(--dim); }
+  #feed { display: grid; gap: 10px; }
+  .receipt { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+    cursor: pointer; transition: border-color .15s, transform .15s; background: #0d1119; }
+  .receipt:hover { border-color: var(--blue); transform: translateY(-1px); }
+  .receipt.rechained { border-color: rgba(196,167,255,.6); background: rgba(196,167,255,.05); }
+  .rhead { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+  .seq { font-family: ui-monospace, monospace; background: #1a2130; padding: 3px 8px; border-radius: 6px; color: var(--blue); }
+  .agent { color: var(--violet); font-weight: 600; }
+  .tag { padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; }
+  .tag.mock { background: rgba(245,185,66,.15); color: var(--amber); }
+  .tag.live { background: rgba(110,231,160,.15); color: var(--green); }
+  .tag.re { background: rgba(196,167,255,.15); color: var(--violet); }
+  .amt { margin-left: auto; font-family: ui-monospace, monospace; color: var(--green); font-weight: 700; }
+  .rtitle { font-weight: 700; margin-bottom: 6px; }
+  .rbody { font-size: 13.5px; color: var(--dim); line-height: 1.55; }
+  .rbody .k { color: var(--text); font-weight: 600; }
+  .rtx { margin-top: 8px; font-family: ui-monospace, monospace; font-size: 11.5px; color: #5d6878; }
+  .rhint { margin-top: 6px; font-size: 12px; color: var(--blue); }
+  #billWow { font-size: 17px; font-weight: 700; color: var(--green); margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
+  td.num, th.num { text-align: right; font-family: ui-monospace, monospace; }
+  tr.total td { font-weight: 800; border-bottom: none; color: var(--green); }
+  #answer { white-space: pre-wrap; font-size: 14px; line-height: 1.65; margin: 0;
+    font-family: ui-sans-serif, system-ui, sans-serif; }
+  #note { background: rgba(124,196,255,.08); border: 1px solid rgba(124,196,255,.35);
+    border-radius: 10px; padding: 10px 14px; font-size: 13.5px; margin-bottom: 14px; color: #bfe0ff; }
+  #challengePanel { position: fixed; top: 0; right: 0; width: min(440px, 94vw); height: 100vh;
+    background: var(--panel); border-left: 1px solid var(--line); padding: 22px; overflow-y: auto;
+    box-shadow: -20px 0 60px rgba(0,0,0,.5); z-index: 10; }
+  #challengePanel h2 { margin-top: 0; font-size: 17px; }
+  #challengePanel .meta { font-size: 13px; color: var(--dim); margin-bottom: 10px; line-height: 1.6; }
+  #chOut { background: #0d1119; border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px; font-size: 13px; white-space: pre-wrap; line-height: 1.6; margin: 10px 0 16px; }
+  .cbtns { display: flex; gap: 10px; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(0,0,0,.3);
+    border-top-color: #06130b; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="tick">✓</span> Thought Receipts</h1>
+  <p>A pay-per-thought agent network. A coordinator breaks your task into subtasks, specialist agents execute each one behind a $0.01 x402 paywall, and every payment, input, and output is logged as a receipt. The receipt chain is the explanation of why.</p>
+</header>
+<div id="mockBanner" class="banner mock"></div>
+<main>
+  <section class="card">
+    <label for="task">Task for the agent network</label>
+    <textarea id="task" rows="3">Plan a 3-day Tokyo itinerary under $1500</textarea>
+    <div class="row">
+      <button id="runBtn">Run the network</button>
+      <span class="hint" id="priceHint"></span>
+    </div>
+  </section>
+
+  <div id="note" hidden></div>
+
+  <section class="card" id="feedWrap" hidden>
+    <h2>Receipt chain</h2>
+    <div id="feed"></div>
+    <p class="hint" style="margin-top:12px">Click any receipt to challenge that step: edit its input and re-run everything downstream.</p>
+  </section>
+
+  <section class="card" id="billWrap" hidden>
+    <h2>Itemized bill</h2>
+    <div id="billWow"></div>
+    <table>
+      <thead><tr><th>#</th><th>Reasoning step</th><th>Agent</th><th class="num">Amount</th></tr></thead>
+      <tbody id="billBody"></tbody>
+    </table>
+  </section>
+
+  <section class="card" id="answerWrap" hidden>
+    <h2>Answer</h2>
+    <pre id="answer"></pre>
+  </section>
+</main>
+
+<aside id="challengePanel" hidden>
+  <h2 id="chTitle">Challenge a step</h2>
+  <div class="meta" id="chMeta"></div>
+  <label for="chInput">Step input (edit this, then re-run from here)</label>
+  <textarea id="chInput" rows="5"></textarea>
+  <label style="margin-top:12px">Step output (what the agent produced)</label>
+  <div id="chOut"></div>
+  <div class="cbtns">
+    <button id="chRun">Re-run from this step</button>
+    <button class="ghost" id="chClose">Close</button>
+  </div>
+</aside>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let HEALTH = { mock: true, pricePerStepUSDC: "0.01", stepsPerRun: 7 };
+let currentTask = "";
+let challengeSeq = 0;
+let challengeReceipt = null;
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+async function boot() {
+  try {
+    HEALTH = await (await fetch("/api/health")).json();
+  } catch (e) { /* offline defaults stand */ }
+  const banner = $("mockBanner");
+  if (HEALTH.mock) {
+    banner.className = "banner mock";
+    banner.textContent = "MOCK MODE: every payment below is simulated. No real USDC moves. Receipts, signatures, and totals are demo data.";
+  } else {
+    banner.className = "banner live";
+    banner.textContent = "LIVE MODE: real EIP-3009 authorizations are signed on Base Sepolia. Authorizations are signed, not submitted onchain.";
+  }
+  const total = (Number(HEALTH.pricePerStepUSDC) * HEALTH.stepsPerRun).toFixed(2);
+  $("runBtn").textContent = `Run the network ($${total})`;
+  $("priceHint").textContent = `${HEALTH.stepsPerRun} reasoning steps at $${HEALTH.pricePerStepUSDC} each`;
+}
+
+function receiptCard(r) {
+  const el = document.createElement("article");
+  el.className = "receipt" + (r.rechained ? " rechained" : "");
+  el.innerHTML =
+    `<div class="rhead"><span class="seq">#${r.seq}</span><span class="agent">${escapeHtml(r.agent)}</span>` +
+    (r.mock ? `<span class="tag mock">mock</span>` : `<span class="tag live">live sig</span>`) +
+    (r.rechained ? `<span class="tag re">re-executed</span>` : "") +
+    `<span class="amt">$${escapeHtml(r.amountUSDC)}</span></div>` +
+    `<div class="rtitle">${escapeHtml(r.title)}</div>` +
+    `<div class="rbody"><div><span class="k">in:</span> ${escapeHtml(r.inputSummary)}</div>` +
+    `<div><span class="k">out:</span> ${escapeHtml(r.outputSummary)}</div></div>` +
+    `<div class="rtx">tx ${escapeHtml(r.txRef.slice(0, 26))}${r.txRef.length > 26 ? "..." : ""} · ${escapeHtml(r.payer.slice(0, 10))}... to ${escapeHtml(r.payee.slice(0, 10))}...</div>` +
+    `<div class="rhint">Click to challenge this step</div>`;
+  el.addEventListener("click", () => openChallenge(r));
+  return el;
+}
+
+function renderRun(data, noteText) {
+  currentTask = $("task").value;
+  $("feed").innerHTML = "";
+  $("feedWrap").hidden = false;
+  $("billWrap").hidden = true;
+  $("answerWrap").hidden = true;
+  if (noteText) { $("note").hidden = false; $("note").textContent = noteText; }
+  else { $("note").hidden = true; }
+
+  // Staggered reveal: real receipt data, presented as a live feed.
+  data.receipts.forEach((r, i) => {
+    setTimeout(() => {
+      $("feed").appendChild(receiptCard(r));
+      if (i === data.receipts.length - 1) renderBill(data.bill, data.answer);
+    }, 450 * (i + 1));
+  });
+}
+
+function renderBill(bill, answer) {
+  const n = bill.lines.length;
+  $("billWow").textContent = `This answer cost $${bill.totalUSDC} across ${n} reasoning step${n === 1 ? "" : "s"}. Every step is receipted above.`;
+  $("billBody").innerHTML =
+    bill.lines.map((l) =>
+      `<tr><td>${l.seq}</td><td>${escapeHtml(l.title)}</td><td>${escapeHtml(l.agent)}</td><td class="num">$${escapeHtml(l.amountUSDC)}</td></tr>`
+    ).join("") +
+    `<tr class="total"><td></td><td>Total</td><td></td><td class="num">$${escapeHtml(bill.totalUSDC)}</td></tr>`;
+  $("billWrap").hidden = false;
+  $("answer").textContent = answer;
+  $("answerWrap").hidden = false;
+  $("billWrap").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function runNetwork() {
+  const task = $("task").value.trim();
+  if (!task) return;
+  const btn = $("runBtn");
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span> Paying for thoughts...`;
+  try {
+    const res = await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    renderRun(data, null);
+  } catch (e) {
+    $("note").hidden = false;
+    $("note").textContent = "Run failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+    boot(); // restore button label
+  }
+}
+
+function openChallenge(r) {
+  challengeSeq = r.seq;
+  challengeReceipt = r;
+  $("chTitle").textContent = `Challenge step ${r.seq}: ${r.title}`;
+  $("chMeta").innerHTML =
+    `Agent: <b>${escapeHtml(r.agent)}</b> · Paid <b>$${escapeHtml(r.amountUSDC)}</b><br>` +
+    `Re-running from here re-executes steps ${r.seq} through ${HEALTH.stepsPerRun}. Earlier steps stay unchanged.`;
+  $("chInput").value = r.inputFull;
+  $("chOut").textContent = r.detail;
+  $("challengePanel").hidden = false;
+}
+
+function closeChallenge() {
+  $("challengePanel").hidden = true;
+  challengeReceipt = null;
+}
+
+async function submitChallenge() {
+  const newInput = $("chInput").value.trim();
+  if (!newInput || !challengeSeq) return;
+  const btn = $("chRun");
+  btn.disabled = true;
+  btn.textContent = "Re-running...";
+  try {
+    const res = await fetch("/api/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task: currentTask, receiptSeq: challengeSeq, newInput }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    closeChallenge();
+    renderRun(
+      data,
+      `Challenged step ${data.changedFrom}. Steps ${data.changedFrom} to ${data.receipts.length} re-executed from your edited input; earlier steps are unchanged. New total: $${data.bill.totalUSDC}.`
+    );
+  } catch (e) {
+    $("note").hidden = false;
+    $("note").textContent = "Challenge failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Re-run from this step";
+  }
+}
+
+$("runBtn").addEventListener("click", runNetwork);
+$("chClose").addEventListener("click", closeChallenge);
+$("chRun").addEventListener("click", submitChallenge);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeChallenge();
+});
+
+boot();
+</script>
+</body>
+</html>
