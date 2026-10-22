@@ -31,7 +31,7 @@ Three more demo beats:
 Three fictional vendors quote for the contract (illustrative pricing, not real quotes):
 
 - **Nimbus Cloud**: cheapest headline at $48K/yr compute, but uncapped egress metered at $0.12/GB.
-- **Stratus Systems**: $54K/yr compute, egress $0.04/GB included up to 500TB/yr then $0.20/GB overage, 24/7 engineer support.
+- **Stratus Systems**: $54K/yr compute, egress billed at $0.04/GB for the first 500TB/yr, then $0.20/GB overage, 24/7 engineer support.
 - **Cirrus Compute**: $60K/yr compute, egress $0.09/GB with no cap.
 
 At 400TB/yr the 3-year TCOs are Stratus $237K, Cirrus $300K, Nimbus $306K. The cheapest headline loses because egress dominates the total. Double the transfer volume to 800TB/yr and Stratus blows through its 500TB cap into punitive overage: Cirrus wins at $408K against Stratus $429K and Nimbus $450K. The obvious pick is not the right pick, and the receipt chain shows exactly why, in dollars.
@@ -71,6 +71,13 @@ answer + itemized bill ($0.07 across the 7 paid steps; the evaluator is free)
 ```
 
 Payments use the x402 pattern with EIP-3009 USDC authorizations on Base Sepolia (see `src/x402.ts`, reused from our tested x402 buyer). Mock mode is the default: payments are simulated with fake signature refs and the UI says so loudly.
+
+## How we built it: AI, models, and sponsors
+
+- **Meterless** is the primary model provider in a provider chain implemented in `src/agents.ts`. When `METERLESS_BASE_URL` and `METERLESS_API_KEY` are set, model calls go to the Meterless endpoint (OpenAI-compatible) running NVIDIA Nemotron; OpenRouter is the fallback when Meterless is not configured or unreachable. The chain is implemented and verified against a local stub endpoint; a live test against the event endpoint is pending the event API key.
+- **Zetaris** is the data layer in progress. The vendor dataset is prepared as three separate CSV sources under `data/` (quotes, egress rates, support and SLA terms), and `src/zetaris.ts` is the client seam that resolves those sources offline today. Wiring the app to the live Zetaris AWS cluster is the remaining step and is in progress; live SQL queries do not run yet.
+- **Cursor** is the development environment: this repo was developed and smoke-tested in the Cursor IDE with its Agent.
+- **NVIDIA** Nemotron models are the product's reasoning models, reached through the provider chain above. The model ids in use are `nvidia/nemotron-3-ultra-550b-a55b` (the default `NEMOTRON_MODEL` on the Meterless path) and, on the OpenRouter fallback path, `nvidia/nemotron-3-ultra-550b-a55b:free` then `nvidia/nemotron-3-super-120b-a12b:free`. Model output enters the product in exactly two places: drafting Why answers (shown only after verification against the cited receipts) and critiquing the synthesis inside the evaluator receipt. Both record the provider and the exact model id that answered.
 
 ## Run it
 
@@ -140,8 +147,12 @@ With `SAMPLE_MODE=false` (the default), the behavior above flips only where a mo
 - `src/agents.ts` ... coordinator + 3 specialists + evaluator verification step, deterministic reasoning, LLM adapter seam (`reasonWithModel`), SAMPLE_MODE flag, chaos failure/recovery mode
 - `src/receipts.ts` ... hash-chained receipts (sha256, prevHash), tamper verification, itemized bill
 - `src/why.ts` ... "Why?" answering over the receipt chain with citations; model drafts are verified against the cited receipts before use, and the answer reports its mode
+- `src/zetaris.ts` ... Zetaris client seam: resolves the three vendor CSV sources under `data/` offline today; the live cluster endpoint plugs in here
 - `src/server.ts` ... plain `http` server, JSON API, static frontend
 - `public/index.html` ... dark single-page UI: live feed, bill, challenge panel, Why box with answer-mode label, verify badge, tamper simulation
+- `data/` ... the vendor dataset as three CSV sources (quotes, egress rates, support and SLA terms) prepared for Zetaris registration, with a data dictionary in `data/README.md`
+- `scripts/` ... verification scripts; `zetaris-smoke.ts` checks the CSV sources reproduce the in-code TCO math exactly
+- `metadata.json` ... submission metadata: track, team, sponsors, and honest integration status
 
 ## Honest notes
 

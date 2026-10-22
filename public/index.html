@@ -138,6 +138,7 @@
         <span class="badge idle" id="verifyBadge">not checked</span>
       </span>
     </h2>
+    <p class="hint" id="replayNote" hidden style="margin:0 0 10px">Run complete. Replaying the receipt chain.</p>
     <div id="feed"></div>
     <div id="tamperOut"></div>
     <p class="hint" style="margin-top:12px">Click any paid receipt to challenge that step: edit its input and re-run everything downstream. The evaluator receipt (last, blue) is the verification step and cannot be challenged. "Simulate tampering" alters a client-side copy only, to show what verification reports when a receipt is edited.</p>
@@ -146,6 +147,7 @@
   <section class="card" id="billWrap" hidden>
     <h2>Itemized bill</h2>
     <div id="billWow"></div>
+    <div class="hint" id="billMockNote" hidden style="margin-bottom:10px"></div>
     <table>
       <thead><tr><th>#</th><th>Reasoning step</th><th>Agent</th><th class="num">Amount</th></tr></thead>
       <tbody id="billBody"></tbody>
@@ -267,6 +269,7 @@ function renderRun(data, noteText) {
   currentTask = $("task").value;
   currentReceipts = data.receipts;
   $("feed").innerHTML = "";
+  $("replayNote").hidden = true;
   $("tamperOut").textContent = "";
   $("verifyBadge").className = "badge idle";
   $("verifyBadge").textContent = "not checked";
@@ -279,11 +282,16 @@ function renderRun(data, noteText) {
   if (noteText) { $("note").hidden = false; $("note").textContent = noteText; }
   else { $("note").hidden = true; }
 
-  // Staggered reveal: real receipt data, presented as a live feed.
+  // Staggered reveal: the run already completed server-side; the feed
+  // replays the finished receipt chain, and the caption says so.
+  $("replayNote").hidden = false;
   data.receipts.forEach((r, i) => {
     setTimeout(() => {
       $("feed").appendChild(receiptCard(r, i));
-      if (i === data.receipts.length - 1) renderBill(data.bill, data.answer);
+      if (i === data.receipts.length - 1) {
+        $("replayNote").hidden = true;
+        renderBill(data.bill, data.answer);
+      }
     }, 450 * (i + 1));
   });
 }
@@ -291,6 +299,14 @@ function renderRun(data, noteText) {
 function renderBill(bill, answer) {
   const paid = bill.lines.filter((l) => l.status !== "failed" && l.agent !== "evaluator").length;
   $("billWow").textContent = `This answer cost $${bill.totalUSDC} across ${paid} reasoning step${paid === 1 ? "" : "s"}. Every step is receipted above.`;
+  const mockNote = $("billMockNote");
+  if (bill.mockSummary === "partial") {
+    mockNote.hidden = false;
+    mockNote.textContent = "Mixed payment modes on this bill: some steps are simulated (mock) and some are live-signed.";
+  } else {
+    mockNote.hidden = true;
+    mockNote.textContent = "";
+  }
   $("billBody").innerHTML =
     bill.lines.map((l) =>
       `<tr class="${l.status === "failed" ? "failedrow" : ""}"><td>${l.seq}</td>` +

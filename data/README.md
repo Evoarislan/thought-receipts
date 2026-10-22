@@ -69,8 +69,8 @@ Annual egress cost comes from `computeTCO` in `src/agents.ts`. The rules:
    the whole volume is billed at `egress_per_gb_usd` and the overage
    column plays no part.
 
-Two consequences are worth stating plainly, because the catalog's own
-marketing phrasing ("egress included up to 500TB/yr") suggests otherwise:
+Two consequences are worth stating plainly, because the allowance is
+easily misread as free volume:
 
 - The allowance is a **rate threshold, not free volume**. Stratus Systems
   bills its first 500 TB/yr at the base rate of $0.04/GB. At 400 TB/yr its

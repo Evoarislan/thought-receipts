@@ -57,7 +57,13 @@ export interface BillLine {
 export interface Bill {
   totalUSDC: string;
   lines: BillLine[];
+  /** True only when every receipt is a mock payment (kept for compatibility). */
   mock: boolean;
+  /**
+   * How the receipts' payment modes break down: "all" mock, "none" mock
+   * (every step live-signed), or "partial" (a mix of the two).
+   */
+  mockSummary: "all" | "partial" | "none";
 }
 
 /** Deterministic JSON: object keys sorted recursively, no whitespace. */
@@ -131,10 +137,13 @@ export function buildBill(receipts: Receipt[]): Bill {
   const total = receipts
     .filter((r) => r.status !== "failed")
     .reduce((sum, r) => sum + Number(r.amountUSDC), 0);
+  const mockCount = receipts.filter((r) => r.mock).length;
   return {
     totalUSDC: total.toFixed(2),
     lines,
     mock: receipts.length > 0 && receipts.every((r) => r.mock),
+    mockSummary:
+      mockCount === 0 ? "none" : mockCount === receipts.length ? "all" : "partial",
   };
 }
 

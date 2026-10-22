@@ -41,7 +41,7 @@ export interface Vendor {
   name: string;
   headlineAnnual: number;
   egressPerGB: number;
-  /** TB/yr included at egressPerGB; null means no cap. */
+  /** TB/yr billed at egressPerGB before the overage rate applies; null means no cap. */
   egressCapTB: number | null;
   egressOveragePerGB: number;
   supportAnnual: number;
@@ -490,7 +490,7 @@ const STEP_DEFS: StepDef[] = [
       ctx.termsNote =
         `Nimbus Cloud: SLA ${nimbus.sla}, ${nimbus.supportTier}. Egress is uncapped and metered at the highest rate (${fmt(nimbus.egressPerGB)}/GB): ` +
         `at ${ctx.volumeTB}TB/yr egress alone costs ${fmt(Math.round(ctx.volumeTB * 1000 * nimbus.egressPerGB))}/yr, rivaling the compute. Annual commit with auto-renew.\n` +
-        `Stratus Systems: SLA ${stratus.sla}, ${stratus.supportTier}. Egress ${fmt(stratus.egressPerGB)}/GB is included up to ${stratus.egressCapTB}TB/yr, ` +
+        `Stratus Systems: SLA ${stratus.sla}, ${stratus.supportTier}. Egress is billed at ${fmt(stratus.egressPerGB)}/GB for the first ${stratus.egressCapTB}TB/yr, ` +
         `then ${fmt(stratus.egressOveragePerGB)}/GB overage. ${stratus.egressCapTB !== null && ctx.volumeTB <= stratus.egressCapTB ? `At ${ctx.volumeTB}TB/yr the workload sits inside the cap with room to grow.` : `At ${ctx.volumeTB}TB/yr the workload EXCEEDS the ${stratus.egressCapTB}TB cap; overage fees apply and erase the rate advantage.`}\n` +
         `Cirrus Compute: SLA ${cirrus.sla}, ${cirrus.supportTier}. Egress ${fmt(cirrus.egressPerGB)}/GB with no cap: predictable at any scale, weakest support tier. Fine for a team with in-house ops.`;
       return {

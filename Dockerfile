@@ -9,6 +9,7 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 COPY public ./public
+COPY data ./data
 RUN npm run build
 
 # Drop dev dependencies for the runtime image.
