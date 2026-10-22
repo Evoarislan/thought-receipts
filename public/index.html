@@ -353,8 +353,8 @@ async function askWhy() {
     $("whyAnswer").hidden = false;
     $("whyAnswer").textContent = data.answer;
     $("whyMode").textContent = data.mode === "model"
-      ? "Answer mode: drafted by the model, then verified against the cited receipts before being shown."
-      : "Answer mode: template, composed from the cited receipts. (Model drafts, when a key is configured, are shown only after the same verification.)";
+      ? `Answer mode: drafted by the model (${data.model || "model id not reported"} via ${data.provider === "meterless" ? "Meterless" : "OpenRouter"}), then verified against the cited receipts before being shown.`
+      : "Answer mode: template, composed from the cited receipts. (Model drafts, when a provider is configured, are shown only after the same verification.)";
     const cites = $("whyCites");
     cites.innerHTML = "";
     (data.citations || []).forEach((seq) => {

@@ -5,7 +5,7 @@
  *   POST /api/run        -> { answer, bill, receipts, mock, sampleMode }
  *   POST /api/challenge  -> { answer, bill, receipts, changedFrom, mock, sampleMode }
  *   GET  /api/verify     -> { valid } or { valid: false, brokenAt }
- *   POST /api/why        -> { answer, citations, mode }
+ *   POST /api/why        -> { answer, citations, mode, provider, model }
  *
  * /api/challenge re-runs the pipeline from one receipt with edited input and
  * returns the new chain. Steps before the challenged one are unchanged.
@@ -143,8 +143,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
     if (req.method === "POST" && pathname === "/api/why") {
       const body = JSON.parse(await readBody(req)) as { question?: string };
-      const { answer, citations, mode } = await answerWhy(latestReceipts, body.question ?? "");
-      json(res, 200, { answer, citations, mode });
+      const result = await answerWhy(latestReceipts, body.question ?? "");
+      json(res, 200, result);
       return;
     }
 

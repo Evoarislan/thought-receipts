@@ -22,7 +22,7 @@ Three things make it memorable:
 
 Three more demo beats:
 
-- **Ask why.** A "Why?" box answers questions about the run in plain English, grounded in the receipt chain with clickable citations. Try: "why did you pick Stratus Systems?" The answer is labeled with the mode that produced it: a model draft (shown only after its dollar figures and vendor names are verified against the cited receipts) or the built-in template.
+- **Ask why.** A "Why?" box answers questions about the run in plain English, grounded in the receipt chain with clickable citations. Try: "why did you pick Stratus Systems?" The answer is labeled with the mode and provider that produced it: a model draft (shown only after its dollar figures and vendor names are verified against the cited receipts) or the built-in template.
 - **The evaluator.** Receipt #8 is a free verification step, not a paid thought. Open it to see the checks: the winner recomputed from the recorded TCO figures, the figure-by-figure trace of the recommendation back to earlier receipts, and a model critique when one is configured.
 - **Break and recover.** Tick "Simulate a step failure" before running. That step's first attempt fails (a $0 receipt records the timeout), the coordinator retries automatically (a "recovered" receipt records the retry), and the pipeline completes. The bill still totals $0.07.
 
@@ -89,7 +89,7 @@ API:
 - `POST /api/run` with `{ "task": "...", "chaos": { "failStep": 3 } }` -> same, but step 3 fails once and recovers
 - `POST /api/challenge` with `{ "task": "...", "receiptSeq": 2, "newInput": "..." }` -> `{ answer, bill, receipts, changedFrom, mock, sampleMode }`
 - `GET /api/verify` -> `{ valid: true }` or `{ valid: false, brokenAt: <seq> }`
-- `POST /api/why` with `{ "question": "..." }` -> `{ answer, citations: [<seq>, ...], mode: "model" | "template" }`
+- `POST /api/why` with `{ "question": "..." }` -> `{ answer, citations: [<seq>, ...], mode: "model" | "template", provider: "meterless" | "openrouter" | null, model: <model id> | null }`
 
 Live mode (real EIP-3009 signing on Base Sepolia):
 
@@ -103,7 +103,8 @@ Environment variables (see `.env.example` for the full list with placeholders):
 
 - `MOCK`: `true` (default) simulates payments; `false` enables live EIP-3009 signing.
 - `PRIVATE_KEY` and `PAYEE_ADDRESS`: live mode only, as shown above.
-- `OPENROUTER_API_KEY` (optional): when set, the Why box drafts its answers with real Nemotron models through OpenRouter (it tries `nvidia/nemotron-3-ultra-550b-a55b:free`, then `nvidia/nemotron-3-super-120b-a12b:free`), and the evaluator adds a model critique of the recommendation. A Why draft is shown only after every dollar figure and vendor name in it is verified against the cited receipts; on any mismatch the draft is discarded and the template answer is returned. With no key set, the Why box uses its built-in template answers and the evaluator runs its deterministic checks only, so the demo still runs with zero API keys.
+- `METERLESS_BASE_URL`, `METERLESS_API_KEY`, `NEMOTRON_MODEL` (optional, primary model provider): when the base URL and key are set, model calls run NVIDIA Nemotron through the Meterless endpoint (OpenAI-compatible: `POST {METERLESS_BASE_URL}/chat/completions`, Bearer key, model `NEMOTRON_MODEL`, default `nvidia/nemotron-3-ultra-550b-a55b`). The evaluator adds a model critique of the recommendation, and the Why box drafts its answers with the model. Every model result records truthful provenance: the evaluator receipt's model field names the provider and the exact model id that answered, and each Why answer reports `provider` and `model` next to its mode, with both shown in the UI.
+- `OPENROUTER_API_KEY` (optional, fallback model provider): used when Meterless is not configured or is unreachable. When set, the Why box drafts its answers with real Nemotron models through OpenRouter (it tries `nvidia/nemotron-3-ultra-550b-a55b:free`, then `nvidia/nemotron-3-super-120b-a12b:free`), and the evaluator adds a model critique of the recommendation. A Why draft is shown only after every dollar figure and vendor name in it is verified against the cited receipts; on any mismatch the draft is discarded and the template answer is returned. With neither provider configured, the Why box uses its built-in template answers and the evaluator runs its deterministic checks only, so the demo still runs with zero API keys.
 - `SAMPLE_MODE`: `true` runs the server fully offline (see Sample mode below). Default `false`.
 - `PORT`: HTTP port, default 3003.
 
@@ -115,7 +116,7 @@ SAMPLE_MODE=true npm start
 
 Sample mode exists for judges and reviewers who have no API keys. With `SAMPLE_MODE=true`:
 
-- The server makes **no external network calls at all**. The model seam refuses to run even if `OPENROUTER_API_KEY` is set.
+- The server makes **no external network calls at all**. The model seam refuses to run even if provider keys (`METERLESS_API_KEY`, `OPENROUTER_API_KEY`) are set.
 - Reasoning runs on the deterministic path over the bundled sample data (the fictional vendor catalog), the Why box answers from its templates, and the evaluator runs its deterministic checks only, with no model critique.
 - Sample mode is disclosed everywhere it matters: `GET /api/health` and the run payloads carry `sampleMode: true`, and the UI shows a SAMPLE MODE banner next to the payment-mode banner.
 
@@ -128,7 +129,7 @@ With `SAMPLE_MODE=false` (the default), the behavior above flips only where a mo
 3. Read the recommendation: **Stratus Systems at $237K 3-year TCO**, beating Cirrus ($300K) and Nimbus ($306K). Point out the twist: Nimbus has the cheapest headline price ($48K/yr) and still finishes last, because its uncapped $0.12/GB egress costs $48K/yr at this volume. The obvious pick is not the right pick.
 4. Click receipt **#3 (Profile the workload)**. Change its input to "double the data transfer volume". Click **Re-run from this step**.
 5. Watch steps 3 through 7 re-execute (marked "re-executed"): the TCO table reprices at 800TB/yr, Stratus blows through its 500TB egress cap into $0.20/GB overage, and the winner flips to **Cirrus Compute at $408K** (Stratus $429K, Nimbus $450K). Steps 1 and 2 stay unchanged.
-6. Ask **"why did you pick Stratus Systems?"** in the Why box. The answer cites the compute and recommendation receipts with the TCO numbers, and the line under the answer names the mode that produced it (template here, since no API key is configured; with a key, a model draft appears only after it passes verification against the cited receipts). Click a citation chip to jump to that receipt.
+6. Ask **"why did you pick Stratus Systems?"** in the Why box. The answer cites the compute and recommendation receipts with the TCO numbers, and the line under the answer names the mode and provider that produced it (template here, since no model provider is configured; with one configured, a model draft appears only after it passes verification against the cited receipts, and the label names the provider and the exact model id). Click a citation chip to jump to that receipt.
 7. Click **Verify chain**: the badge reads VALID. Then click **Simulate tampering** (client-side only): a copy of one receipt is edited, and the local checker reports `{ valid: false, brokenAt: 3 }`. One edited character breaks the chain from that point on.
 8. Tick **"Simulate a step failure"** and run again: step 2's first attempt fails (a red $0 receipt records the timeout), the retry succeeds (green "recovered" badge), the pipeline completes, and the bill still totals $0.07.
 9. Point at the mock banner: all payments are simulated in this demo; flip `MOCK=false` for real EIP-3009 signatures. Vendor names and quotes are fictional and illustrative.
@@ -145,7 +146,7 @@ With `SAMPLE_MODE=false` (the default), the behavior above flips only where a mo
 ## Honest notes
 
 - The pipeline is a coordinator plus three specialists running a planned sequence, plus an evaluator that verifies the result against the receipts. It is not a free-form multi-agent swarm, and the README does not claim otherwise.
-- Core reasoning is deterministic logic keyed on the task text. The model, when a key is configured, does two bounded jobs: drafting Why answers (verified against the cited receipts before being shown) and critiquing the synthesis inside the evaluator receipt. With no key, both fall back to deterministic behavior and the demo runs with zero API keys.
+- Core reasoning is deterministic logic keyed on the task text. The model, when a provider is configured (Meterless serving Nemotron first, OpenRouter as fallback), does two bounded jobs: drafting Why answers (verified against the cited receipts before being shown) and critiquing the synthesis inside the evaluator receipt. With no provider, both fall back to deterministic behavior and the demo runs with zero API keys.
 - `SAMPLE_MODE=true` disables the model seam entirely, so a run makes no external network calls. That is the mode to judge in when you have no keys.
 - Mock mode simulates payments. Nothing here moves real money unless you set `MOCK=false` with your own key.
 - The receipt chain, the bill math, the evaluator checks, and the challenge re-execution are all real and deterministic.

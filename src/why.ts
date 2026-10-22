@@ -6,15 +6,17 @@
  * fields, and compose a plain-English answer citing receipt sequence
  * numbers. Deterministic and dependency free.
  *
- * LLM upgrade seam: when a model is wired (reasonWithModel), it drafts the
- * answer instead, with the template citations kept as grounding. A model
- * draft is not trusted blindly: every dollar figure and vendor name in the
- * draft is checked against the cited receipts' recorded contents, and on
- * any mismatch the draft is discarded and the template answer is returned.
- * The response reports which mode produced the answer ("model" or
- * "template"). In SAMPLE_MODE no model call is attempted at all.
+ * LLM upgrade seam: when a model is wired (reasonWithModelDetailed), it
+ * drafts the answer instead, with the template citations kept as
+ * grounding. A model draft is not trusted blindly: every dollar figure
+ * and vendor name in the draft is checked against the cited receipts'
+ * recorded contents, and on any mismatch the draft is discarded and the
+ * template answer is returned. The response reports which mode produced
+ * the answer ("model" or "template") and, for a model answer, which
+ * provider answered ("meterless" or "openrouter") and the exact model
+ * id. In SAMPLE_MODE no model call is attempted at all.
  */
-import { reasonWithModel, SAMPLE_MODE } from "./agents.js";
+import { reasonWithModelDetailed, SAMPLE_MODE, type ModelProvider } from "./agents.js";
 import type { Receipt } from "./receipts.js";
 
 export interface WhyAnswer {
@@ -22,6 +24,10 @@ export interface WhyAnswer {
   citations: number[];
   /** "model" when a verified model draft was used, "template" otherwise. */
   mode: "model" | "template";
+  /** Provider that drafted the answer; null for template answers. */
+  provider: ModelProvider | null;
+  /** Exact model id that drafted the answer; null for template answers. */
+  model: string | null;
 }
 
 const STOPWORDS = new Set([
@@ -70,7 +76,7 @@ function templateAnswer(hits: { r: Receipt; s: number }[]): WhyAnswer {
   const answer =
     `From the receipt chain:\n${lines.join("\n")}\n` +
     `In short: ${top[0].r.outputSummary}`;
-  return { answer, citations: top.map(({ r }) => r.seq), mode: "template" };
+  return { answer, citations: top.map(({ r }) => r.seq), mode: "template", provider: null, model: null };
 }
 
 // --- Draft verification ------------------------------------------------------
@@ -146,27 +152,37 @@ export async function answerWhy(receipts: Receipt[], question: string): Promise<
       answer: `I could not find anything in the receipt chain about "${q}". Try asking about a vendor, a TCO number, or a step the agents took.`,
       citations: [],
       mode: "template",
+      provider: null,
+      model: null,
     };
   }
   const cited = scored.slice(0, 3).map(({ r }) => r);
 
   // LLM seam: if a model is wired, it drafts the answer. The draft is shown
   // only if its figures and vendor names check out against the cited
-  // receipts; otherwise the template answer stands. SAMPLE_MODE never
+  // receipts; otherwise the template answer stands. The response records
+  // which provider and model produced a shown draft. SAMPLE_MODE never
   // attempts the call.
   if (!SAMPLE_MODE) {
-    let modelDraft: string | null = null;
+    let draft: { text: string; model: string; provider: ModelProvider } | null = null;
     try {
-      modelDraft = await reasonWithModel(
+      draft = await reasonWithModelDetailed(
         `Receipts:\n${receipts
           .map((r) => `#${r.seq} [${r.agent}] ${r.title}: ${r.outputSummary}`)
           .join("\n")}\n\nQuestion: ${q}\n\nAnswer in plain English, citing receipt numbers.`
       );
     } catch {
-      // reasonWithModel is not configured: the template answer stands.
+      // No provider configured, or every provider failed: the template
+      // answer stands.
     }
-    if (modelDraft && draftIsGrounded(modelDraft, cited, receipts)) {
-      return { answer: modelDraft, citations: cited.map((r) => r.seq), mode: "model" };
+    if (draft && draftIsGrounded(draft.text, cited, receipts)) {
+      return {
+        answer: draft.text,
+        citations: cited.map((r) => r.seq),
+        mode: "model",
+        provider: draft.provider,
+        model: draft.model,
+      };
     }
   }
   return templateAnswer(scored);

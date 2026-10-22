@@ -56,67 +56,101 @@ export interface TaskProfile {
 }
 
 /**
- * LLM adapter seam. Wire a model call here to upgrade an executor from
+ * LLM adapter seam: a provider chain over OpenAI-compatible chat
+ * completions. Wire a model call here to upgrade an executor from
  * deterministic mock logic to real reasoning. The receipt shape does not
- * change, so the UI, bill, and challenge flow keep working.
+ * change, so the UI, bill, and challenge flow keep working, and every
+ * result carries the provider and the exact model id that produced it,
+ * so callers can record the truth about which provider answered.
  *
- * OpenRouter fallback (verified Oct 20, 2026): set OPENROUTER_API_KEY and the
- * why-box drafts from real Nemotron reasoning over the OpenAI-compatible
- * endpoint. No key set -> identical behavior to the unconfigured stub, so the
- * demo still runs with zero API keys.
+ * Provider order (when SAMPLE_MODE is off):
+ *   1. Meterless: NVIDIA Nemotron served through the Meterless endpoint.
+ *      Set METERLESS_BASE_URL (including the /v1 prefix) and
+ *      METERLESS_API_KEY; NEMOTRON_MODEL selects the model id.
+ *   2. OpenRouter fallback: set OPENROUTER_API_KEY and the same calls go
+ *      to OpenRouter's hosted Nemotron models (verified Oct 20, 2026).
+ *   3. Nothing configured, or every provider failed: the call throws and
+ *      the callers fall back to the deterministic path, so the demo
+ *      still runs with zero API keys.
+ * A provider failure (network error, non-200, timeout) falls through to
+ * the next provider in the chain.
  */
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_MODELS = [
   "nvidia/nemotron-3-ultra-550b-a55b:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
 ];
+const DEFAULT_NEMOTRON_MODEL = "nvidia/nemotron-3-ultra-550b-a55b";
 const NOT_CONFIGURED =
-  "reasonWithModel is not configured. This scaffold uses deterministic mock reasoning so it runs with zero API keys.";
+  "reasonWithModel is not configured. Set METERLESS_BASE_URL and METERLESS_API_KEY (Nemotron through Meterless) or OPENROUTER_API_KEY to enable model calls. Without either, this scaffold uses deterministic reasoning so it runs with zero API keys.";
 
-async function callOpenRouter(prompt: string, apiKey: string, model: string): Promise<string> {
+export type ModelProvider = "meterless" | "openrouter";
+
+async function callChatCompletions(args: {
+  url: string;
+  apiKey: string;
+  model: string;
+  prompt: string;
+  timeoutMs: number;
+  providerLabel: string;
+  extraHeaders?: Record<string, string>;
+}): Promise<{ text: string; model: string }> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 90000);
+  const timer = setTimeout(() => ctrl.abort(), args.timeoutMs);
   try {
-    const res = await fetch(OPENROUTER_URL, {
+    const res = await fetch(args.url, {
       method: "POST",
       signal: ctrl.signal,
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${args.apiKey}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/Evoarislan/thought-receipts",
-        "X-Title": "Thought Receipts (Open Agent Hackathon)",
+        ...(args.extraHeaders ?? {}),
       },
       body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: prompt }],
+        model: args.model,
+        messages: [{ role: "user", content: args.prompt }],
         max_tokens: 600,
       }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`OpenRouter ${res.status} for ${model}: ${body.slice(0, 200)}`);
+      throw new Error(`${args.providerLabel} ${res.status} for ${args.model}: ${body.slice(0, 200)}`);
     }
     const data = (await res.json()) as {
+      model?: string;
       choices?: Array<{ message?: { content?: string } }>;
     };
     const text = data.choices?.[0]?.message?.content?.trim();
-    if (!text) throw new Error(`OpenRouter returned no content for ${model}.`);
-    return text;
+    if (!text) throw new Error(`${args.providerLabel} returned no content for ${args.model}.`);
+    // Prefer the model id the provider reports in its response; fall back
+    // to the id we requested.
+    return { text, model: (data.model ?? "").trim() || args.model };
   } finally {
     clearTimeout(timer);
   }
+}
+
+function meterlessConfig(): { baseUrl: string; apiKey: string; model: string } | null {
+  const baseUrl = (process.env.METERLESS_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  const apiKey = (process.env.METERLESS_API_KEY ?? "").trim();
+  if (!baseUrl || !apiKey) return null;
+  const model = (process.env.NEMOTRON_MODEL ?? "").trim() || DEFAULT_NEMOTRON_MODEL;
+  return { baseUrl, apiKey, model };
 }
 
 export interface ModelResult {
   text: string;
   /** The exact model id that produced the text. */
   model: string;
+  /** The provider that answered: "meterless" or "openrouter". */
+  provider: ModelProvider;
 }
 
 /**
- * Like reasonWithModel, but also reports which model answered, so callers
- * (the evaluator) can record the truth in their receipt. In SAMPLE_MODE this
- * throws before any network call is attempted, even if a key is set.
+ * Like reasonWithModel, but also reports which provider and model
+ * answered, so callers (the evaluator, the why box) can record the truth
+ * in their receipt or response. In SAMPLE_MODE this throws before any
+ * network call is attempted, even if provider keys are set.
  */
 export async function reasonWithModelDetailed(prompt: string): Promise<ModelResult> {
   if (SAMPLE_MODE) {
@@ -124,17 +158,53 @@ export async function reasonWithModelDetailed(prompt: string): Promise<ModelResu
       "SAMPLE_MODE is on: model calls are disabled, so a run makes no external network requests."
     );
   }
-  const apiKey = (process.env.OPENROUTER_API_KEY ?? "").trim();
-  if (!apiKey) throw new Error(NOT_CONFIGURED);
   let lastErr: unknown = null;
-  for (const model of OPENROUTER_MODELS) {
+
+  // 1. Meterless: Nemotron through the Meterless endpoint.
+  const ml = meterlessConfig();
+  if (ml) {
     try {
-      return { text: await callOpenRouter(prompt, apiKey, model), model };
+      const r = await callChatCompletions({
+        url: `${ml.baseUrl}/chat/completions`,
+        apiKey: ml.apiKey,
+        model: ml.model,
+        prompt,
+        timeoutMs: 60000,
+        providerLabel: "Meterless",
+      });
+      return { ...r, provider: "meterless" };
     } catch (err) {
       lastErr = err;
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+
+  // 2. OpenRouter fallback: hosted Nemotron models.
+  const apiKey = (process.env.OPENROUTER_API_KEY ?? "").trim();
+  if (apiKey) {
+    for (const model of OPENROUTER_MODELS) {
+      try {
+        const r = await callChatCompletions({
+          url: OPENROUTER_URL,
+          apiKey,
+          model,
+          prompt,
+          timeoutMs: 90000,
+          providerLabel: "OpenRouter",
+          extraHeaders: {
+            "HTTP-Referer": "https://github.com/Evoarislan/thought-receipts",
+            "X-Title": "Thought Receipts (Open Agent Hackathon)",
+          },
+        });
+        return { ...r, provider: "openrouter" };
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+  }
+
+  // 3. Nothing configured, or every provider failed.
+  if (lastErr) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  throw new Error(NOT_CONFIGURED);
 }
 
 export async function reasonWithModel(prompt: string): Promise<string> {
@@ -549,6 +619,7 @@ interface Evaluation {
   recomputedWinner: string | null;
   critique: string | null;
   critiqueModel: string | null;
+  critiqueProvider: ModelProvider | null;
 }
 
 /** Dollar figures in a text, normalized ("$48,000" and "$237K" kept distinct). */
@@ -629,6 +700,7 @@ function deterministicEvaluation(receipts: Receipt[]): Evaluation {
     recomputedWinner,
     critique: null,
     critiqueModel: null,
+    critiqueProvider: null,
   };
 }
 
@@ -840,13 +912,14 @@ export async function runPipeline(
         .filter((r) => r.status !== "failed")
         .map((r) => `#${r.seq} [${r.agent}] ${r.title}: ${r.outputSummary}`)
         .join("\n");
-      const { text, model } = await reasonWithModelDetailed(
+      const { text, model, provider } = await reasonWithModelDetailed(
         `You are the evaluator agent in a pay-per-thought agent network. The network produced this vendor recommendation:\n\n${ctx.recommendation}\n\n` +
           `The receipts recorded during the run say:\n${receiptLines}\n\n` +
           `Critique the recommendation against the receipts in two or three plain sentences. Say whether the receipts support its claims, and name any claim they do not support. Do not invent numbers.`
       );
       evaluation.critique = text.replace(/\n{3,}/g, "\n\n").trim().slice(0, 1200);
       evaluation.critiqueModel = model;
+      evaluation.critiqueProvider = provider;
     } catch {
       // No model configured: the deterministic checks stand on their own.
     }
@@ -873,7 +946,7 @@ export async function runPipeline(
       `Evaluator verification of the recommendation against the receipt chain.\n\nChecks:\n${evalChecks || "- none ran"}` +
       (evaluation.discrepancies.length > 0 ? `\n\nDiscrepancies:\n${evalProblems}` : `\n\nDiscrepancies: none.`) +
       (evaluation.critique
-        ? `\n\nModel critique (${evaluation.critiqueModel}):\n${evaluation.critique}`
+        ? `\n\nModel critique (${evaluation.critiqueModel} via ${evaluation.critiqueProvider}):\n${evaluation.critique}`
         : `\n\nModel critique: none. ${SAMPLE_MODE ? "SAMPLE_MODE is on, so no model was called." : "No model is configured; the deterministic checks above are the whole evaluation."}`),
     payment: {
       from: USER_WALLET,
@@ -885,7 +958,7 @@ export async function runPipeline(
     status: "ok",
     note: "verification step: no charge",
     model: evaluation.critiqueModel
-      ? `deterministic checks + ${evaluation.critiqueModel} critique`
+      ? `deterministic checks + ${evaluation.critiqueModel} critique via ${evaluation.critiqueProvider}`
       : "deterministic",
     targetAgent: null,
   });
