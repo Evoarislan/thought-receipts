@@ -947,7 +947,7 @@ export async function runPipeline(
       (evaluation.discrepancies.length > 0 ? `\n\nDiscrepancies:\n${evalProblems}` : `\n\nDiscrepancies: none.`) +
       (evaluation.critique
         ? `\n\nModel critique (${evaluation.critiqueModel} via ${evaluation.critiqueProvider}):\n${evaluation.critique}`
-        : `\n\nModel critique: none. ${SAMPLE_MODE ? "SAMPLE_MODE is on, so no model was called." : "No model is configured; the deterministic checks above are the whole evaluation."}`),
+        : `\n\nModel critique: none. ${SAMPLE_MODE ? "SAMPLE_MODE is on, so no model was called." : "No model critique is recorded; the deterministic checks above are the whole evaluation."}`),
     payment: {
       from: USER_WALLET,
       to: AGENT_WALLETS.evaluator ?? USER_WALLET,
