@@ -33,6 +33,12 @@ export interface Receipt {
   status: ReceiptStatus;
   /** Optional note, e.g. failure or recovery details. */
   note?: string;
+  /** Model that produced this step's output, or "deterministic" for template logic. */
+  model: string;
+  /** Agent that receives the handoff after this step, or null at the end of the chain. */
+  targetAgent: string | null;
+  /** Retry count for this step: 0 for a first attempt, incremented on retries. */
+  retryCount: number;
   /** Hash of the previous receipt in the chain, or "GENESIS" for the first. */
   prevHash: string;
   /** sha256 hex of (prevHash + canonical JSON of this receipt minus hash). */

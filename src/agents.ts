@@ -12,7 +12,7 @@
  * LLM adapter seam: replace any executor's body with a call to
  * reasonWithModel() later; the receipt shape stays identical.
  */
-import { payForStep, AGENT_WALLETS, USER_WALLET, PRICE_PER_STEP_USDC } from "./x402.js";
+import { payForStep, AGENT_WALLETS, USER_WALLET, PRICE_PER_STEP_USDC, MOCK_MODE } from "./x402.js";
 import { chainReceipts, type Receipt, type ReceiptStatus } from "./receipts.js";
 
 export const STEP_COUNT = 7;
@@ -42,11 +42,66 @@ export interface TaskProfile {
  * LLM adapter seam. Wire a model call here to upgrade an executor from
  * deterministic mock logic to real reasoning. The receipt shape does not
  * change, so the UI, bill, and challenge flow keep working.
+ *
+ * OpenRouter fallback (verified Oct 20, 2026): set OPENROUTER_API_KEY and the
+ * why-box drafts from real Nemotron reasoning over the OpenAI-compatible
+ * endpoint. No key set -> identical behavior to the unconfigured stub, so the
+ * demo still runs with zero API keys.
  */
-export async function reasonWithModel(_prompt: string): Promise<string> {
-  throw new Error(
-    "reasonWithModel is not configured. This scaffold uses deterministic mock reasoning so it runs with zero API keys."
-  );
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_MODELS = [
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+];
+const NOT_CONFIGURED =
+  "reasonWithModel is not configured. This scaffold uses deterministic mock reasoning so it runs with zero API keys.";
+
+async function callOpenRouter(prompt: string, apiKey: string, model: string): Promise<string> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 90000);
+  try {
+    const res = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/Evoarislan/thought-receipts",
+        "X-Title": "Thought Receipts (Open Agent Hackathon)",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 600,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`OpenRouter ${res.status} for ${model}: ${body.slice(0, 200)}`);
+    }
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const text = data.choices?.[0]?.message?.content?.trim();
+    if (!text) throw new Error(`OpenRouter returned no content for ${model}.`);
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function reasonWithModel(prompt: string): Promise<string> {
+  const apiKey = (process.env.OPENROUTER_API_KEY ?? "").trim();
+  if (!apiKey) throw new Error(NOT_CONFIGURED);
+  let lastErr: unknown = null;
+  for (const model of OPENROUTER_MODELS) {
+    try {
+      return await callOpenRouter(prompt, apiKey, model);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 export function parseTask(task: string): TaskProfile {
@@ -63,6 +118,56 @@ export function parseTask(task: string): TaskProfile {
     contractAnnual,
     termYears: term ? Math.min(10, Math.max(1, parseInt(term[1], 10))) : 3,
   };
+}
+
+// --- Scope gate ---------------------------------------------------------------
+// This network answers one kind of question: vendor, supplier, and cloud
+// provider selection for an infrastructure contract. Anything else is
+// declined honestly at the gate instead of being forced through the vendor
+// pipeline. Strong terms pass on their own; a generic term like "cloud" or
+// "contract" also needs a selection signal so unrelated tasks stay out.
+
+const STRONG_SCOPE_TERMS: RegExp[] = [
+  /\bvendors?\b/,
+  /\bsuppliers?\b/,
+  /\bprocurement\b/,
+  /\bcloud providers?\b/,
+  /\bcloud infrastructure\b/,
+  /\binfrastructure contracts?\b/,
+  /\brfp\b/,
+  /\btotal cost of ownership\b/,
+  /\btco\b/,
+  /\begress\b/,
+];
+
+const WEAK_SCOPE_TERMS: RegExp[] = [
+  /\bcloud\b/,
+  /\bproviders?\b/,
+  /\bcontracts?\b/,
+  /\bhosting\b/,
+  /\binfrastructure\b/,
+  /\bsaas\b/,
+];
+
+const SELECTION_TERMS: RegExp[] = [
+  /\bselect/,
+  /\bchoose\b/,
+  /\bchoice\b/,
+  /\bpick\b/,
+  /\bevaluat/,
+  /\bcompar/,
+  /\bdecid/,
+  /\brecommend/,
+  /\bswitch/,
+  /\bmigrat/,
+];
+
+export function isInScope(task: string): boolean {
+  const t = task.toLowerCase();
+  if (STRONG_SCOPE_TERMS.some((re) => re.test(t))) return true;
+  const weakHits = WEAK_SCOPE_TERMS.filter((re) => re.test(t)).length;
+  if (weakHits >= 2) return true;
+  return weakHits >= 1 && SELECTION_TERMS.some((re) => re.test(t));
 }
 
 /**
@@ -170,6 +275,8 @@ interface StepDef {
   agent: AgentName;
   step: string;
   title: string;
+  /** Optional dynamic title, e.g. when the label depends on the task's term. */
+  buildTitle?: (ctx: Ctx) => string;
   buildInput: (ctx: Ctx, task: string) => string;
   execute: (ctx: Ctx, input: string) => StepOutput;
 }
@@ -192,7 +299,7 @@ function tcoTable(rows: TcoRow[], volumeTB: number, termYears: number): string {
     (r) =>
       `- ${r.vendor.name}: compute ${fmt(r.vendor.headlineAnnual)} + egress ${fmt(r.egressAnnual)} + support ${fmt(r.vendor.supportAnnual)} = ${fmt(r.annual)}/yr x ${termYears} yrs = ${fmtK(r.tco)} TCO`
   );
-  return `3-year TCO at ${volumeTB}TB/yr egress:\n${lines.join("\n")}`;
+  return `${termYears}-year TCO at ${volumeTB}TB/yr egress:\n${lines.join("\n")}`;
 }
 
 const STEP_DEFS: StepDef[] = [
@@ -202,12 +309,12 @@ const STEP_DEFS: StepDef[] = [
     step: "decompose",
     title: "Break the task into subtasks",
     buildInput: (_ctx, task) => task,
-    execute: (_ctx, input) => {
+    execute: (ctx, input) => {
       const plan = [
         "1) research vendor quotes",
         "2) profile the workload (transfer volume, term)",
         "3) check contract terms, SLAs, and support",
-        "4) compute 3-year total cost of ownership per vendor",
+        `4) compute ${ctx.profile.termYears}-year total cost of ownership per vendor`,
         "5) write the recommendation with rationale",
         "6) assemble the final answer",
       ].join("\n");
@@ -223,13 +330,20 @@ const STEP_DEFS: StepDef[] = [
     step: "gather-quotes",
     title: "Research vendor quotes",
     buildInput: (ctx, task) => `${task} :: quotes for ${fmt(ctx.profile.contractAnnual)}/yr cloud infrastructure`,
-    execute: (_ctx, _input) => {
+    execute: (ctx, _input) => {
+      const cheapest = VENDORS.reduce((a, b) => (b.headlineAnnual < a.headlineAnnual ? b : a));
+      const budget = ctx.profile.contractAnnual;
+      const fitting = VENDORS.filter((v) => v.headlineAnnual <= budget);
+      const budgetNote =
+        fitting.length === VENDORS.length
+          ? `All ${VENDORS.length} headlines fit inside the ${fmt(budget)}/yr compute budget, so headline price alone cannot decide this.`
+          : `${fitting.length} of ${VENDORS.length} headlines fit inside the ${fmt(budget)}/yr compute budget (${fitting.map((v) => v.name).join(", ")}); the rest open above budget, so total cost matters even more.`;
       return {
-        outputSummary: `Gathered quotes from ${VENDORS.map((v) => v.name).join(", ")}. Cheapest headline: Nimbus Cloud at ${fmt(48000)}/yr.`,
+        outputSummary: `Gathered quotes from ${VENDORS.map((v) => v.name).join(", ")}. Cheapest headline: ${cheapest.name} at ${fmt(cheapest.headlineAnnual)}/yr.`,
         detail:
           `Vendor quotes (fictional vendors, illustrative pricing):\n` +
           VENDORS.map(quoteCard).join("\n") +
-          `\n\nAll three headlines fit inside the ${fmt(60000)}/yr compute budget, so headline price alone cannot decide this.`,
+          `\n\n${budgetNote}`,
       };
     },
   },
@@ -260,14 +374,15 @@ const STEP_DEFS: StepDef[] = [
     title: "Check contract terms and support",
     buildInput: (ctx) => `contract terms for ${VENDORS.map((v) => v.name).join(", ")} at ${ctx.volumeTB}TB/yr`,
     execute: (ctx, _input) => {
+      const [nimbus, stratus, cirrus] = VENDORS;
       ctx.termsNote =
-        `Nimbus Cloud: SLA ${VENDORS[0].sla}, ${VENDORS[0].supportTier}. Egress is uncapped and metered at the highest rate (${fmt(0.12)}/GB): ` +
-        `at ${ctx.volumeTB}TB/yr egress alone costs ${fmt(Math.round(ctx.volumeTB * 1000 * 0.12))}/yr, more than the compute. Annual commit with auto-renew.\n` +
-        `Stratus Systems: SLA ${VENDORS[1].sla}, ${VENDORS[1].supportTier}. Egress ${fmt(0.04)}/GB is included up to 500TB/yr, ` +
-        `then ${fmt(0.2)}/GB overage. ${ctx.volumeTB <= 500 ? `At ${ctx.volumeTB}TB/yr the workload sits inside the cap with room to grow.` : `At ${ctx.volumeTB}TB/yr the workload EXCEEDS the 500TB cap; overage fees apply and erase the rate advantage.`}\n` +
-        `Cirrus Compute: SLA ${VENDORS[2].sla}, ${VENDORS[2].supportTier}. Egress ${fmt(0.09)}/GB with no cap: predictable at any scale, weakest support tier. Fine for a team with in-house ops.`;
+        `Nimbus Cloud: SLA ${nimbus.sla}, ${nimbus.supportTier}. Egress is uncapped and metered at the highest rate (${fmt(nimbus.egressPerGB)}/GB): ` +
+        `at ${ctx.volumeTB}TB/yr egress alone costs ${fmt(Math.round(ctx.volumeTB * 1000 * nimbus.egressPerGB))}/yr, rivaling the compute. Annual commit with auto-renew.\n` +
+        `Stratus Systems: SLA ${stratus.sla}, ${stratus.supportTier}. Egress ${fmt(stratus.egressPerGB)}/GB is included up to ${stratus.egressCapTB}TB/yr, ` +
+        `then ${fmt(stratus.egressOveragePerGB)}/GB overage. ${stratus.egressCapTB !== null && ctx.volumeTB <= stratus.egressCapTB ? `At ${ctx.volumeTB}TB/yr the workload sits inside the cap with room to grow.` : `At ${ctx.volumeTB}TB/yr the workload EXCEEDS the ${stratus.egressCapTB}TB cap; overage fees apply and erase the rate advantage.`}\n` +
+        `Cirrus Compute: SLA ${cirrus.sla}, ${cirrus.supportTier}. Egress ${fmt(cirrus.egressPerGB)}/GB with no cap: predictable at any scale, weakest support tier. Fine for a team with in-house ops.`;
       return {
-        outputSummary: "Terms checked. Flag: Nimbus egress is uncapped at the highest metered rate; Stratus pricing hinges on the 500TB cap.",
+        outputSummary: `Terms checked. Flag: Nimbus egress is uncapped at the highest metered rate; Stratus pricing hinges on the ${stratus.egressCapTB}TB cap.`,
         detail: `Contract terms and risk flags:\n${ctx.termsNote}`,
       };
     },
@@ -276,9 +391,10 @@ const STEP_DEFS: StepDef[] = [
     seq: 5,
     agent: "compute",
     step: "compute-tco",
-    title: "Compute 3-year TCO per vendor",
+    title: "Compute TCO per vendor",
+    buildTitle: (ctx) => `Compute ${ctx.profile.termYears}-year TCO per vendor`,
     buildInput: (ctx) =>
-      `3-year TCO for ${VENDORS.map((v) => v.name).join(", ")} at ${ctx.volumeTB}TB/yr egress, ` +
+      `${ctx.profile.termYears}-year TCO for ${VENDORS.map((v) => v.name).join(", ")} at ${ctx.volumeTB}TB/yr egress, ` +
       `compute plus egress plus support`,
     execute: (ctx, _input) => {
       const rows = VENDORS.map((v) => computeTCO(v, ctx.volumeTB, ctx.profile.termYears));
@@ -286,13 +402,14 @@ const STEP_DEFS: StepDef[] = [
       ctx.tcoRows = rows;
       ctx.winner = rows[0];
       const order = rows.map((r) => `${r.vendor.name} ${fmtK(r.tco)}`).join(", ");
+      const cheapestHeadline = rows.reduce((a, b) => (b.vendor.headlineAnnual < a.vendor.headlineAnnual ? b : a));
       return {
         outputSummary: `${ctx.profile.termYears}-year TCO at ${ctx.volumeTB}TB/yr: ${order}. Winner: ${ctx.winner.vendor.name}.`,
         detail:
           tcoTable(rows, ctx.volumeTB, ctx.profile.termYears) +
           `\n\nWinner on total cost: ${ctx.winner.vendor.name} at ${fmtK(ctx.winner.tco)}. ` +
-          `Headline price misleads: the cheapest headline (Nimbus Cloud, ${fmt(48000)}/yr) finishes ` +
-          `${rows.findIndex((r) => r.vendor.name === "Nimbus Cloud") + 1} of 3 because egress dominates the total.`,
+          `Headline price misleads: the cheapest headline (${cheapestHeadline.vendor.name}, ${fmt(cheapestHeadline.vendor.headlineAnnual)}/yr) finishes ` +
+          `${rows.indexOf(cheapestHeadline) + 1} of 3 because egress dominates the total.`,
       };
     },
   },
@@ -311,14 +428,30 @@ const STEP_DEFS: StepDef[] = [
         ctx.recommendation = "TCO not computed; cannot recommend.";
       } else {
         const savingVsRunnerUp = w.tco === runnerUp.tco ? 0 : runnerUp.tco - w.tco;
+        // Support and SLA claims come from the winner's own record. A
+        // superlative is used only when the data supports it: the SLA
+        // figure is the highest in the field, or the support package is
+        // the most comprehensive (priciest) in the field.
+        const bestSla = Math.max(...VENDORS.map((v) => parseFloat(v.sla)));
+        const slaClaim =
+          parseFloat(w.vendor.sla) >= bestSla
+            ? `It also carries the strongest SLA in the field at ${w.vendor.sla}.`
+            : `Its SLA is ${w.vendor.sla}.`;
+        const priciestSupport = Math.max(...VENDORS.map((v) => v.supportAnnual));
+        const supportClaim =
+          w.vendor.supportAnnual >= priciestSupport
+            ? `Support is ${w.vendor.supportTier} at ${fmt(w.vendor.supportAnnual)}/yr, the most comprehensive package in the field.`
+            : `Support is ${w.vendor.supportTier} at ${fmt(w.vendor.supportAnnual)}/yr.`;
+        const budgetClaim = VENDORS.every((v) => v.headlineAnnual <= ctx.profile.contractAnnual)
+          ? `All three headlines fit the ${fmt(ctx.profile.contractAnnual)}/yr compute budget, so the decision comes down to total cost`
+          : `The headlines straddle the ${fmt(ctx.profile.contractAnnual)}/yr compute budget, so the decision comes down to total cost`;
         ctx.recommendation =
           `Recommend ${w.vendor.name} for the ${ctx.profile.termYears}-year contract.\n` +
           `Rationale: ${ctx.profile.termYears}-year TCO of ${fmtK(w.tco)} at ${ctx.volumeTB}TB/yr egress, ` +
           `${fmtK(savingVsRunnerUp)} below ${runnerUp.vendor.name} (${fmtK(runnerUp.tco)}). ` +
-          `Nimbus Cloud has the cheapest headline (${fmt(48000)}/yr) but finishes at ${fmtK(nimbus.tco)} because its uncapped ` +
-          `${fmt(0.12)}/GB egress costs ${fmt(nimbus.egressAnnual)}/yr at this volume. All three headlines fit the ${fmt(ctx.profile.contractAnnual)}/yr ` +
-          `compute budget, so the decision comes down to total cost, where ${w.vendor.name}'s ${w.vendor.differentiator} wins. ` +
-          `${w.vendor.name} also carries the strongest support tier (${w.vendor.supportTier}) and SLA (${w.vendor.sla}).`;
+          `Nimbus Cloud has the cheapest headline (${fmt(nimbus.vendor.headlineAnnual)}/yr) but finishes at ${fmtK(nimbus.tco)} because its uncapped ` +
+          `${fmt(nimbus.vendor.egressPerGB)}/GB egress costs ${fmt(nimbus.egressAnnual)}/yr at this volume. ${budgetClaim}, where ${w.vendor.name}'s ${w.vendor.differentiator} wins. ` +
+          `${supportClaim} ${slaClaim}`;
       }
       return {
         outputSummary: `Recommends ${w?.vendor.name ?? "nobody"}: ${w ? `${fmtK(w.tco)} TCO, ${fmtK(runnerUp!.tco - w.tco)} under the runner-up` : "no winner"}.`,
@@ -389,12 +522,21 @@ export async function runPipeline(
     payment: { from: string; to: string; amountUSDC: string; txRef: string; mock: boolean };
     status: ReceiptStatus;
     note?: string;
+    model?: string;
+    targetAgent?: string | null;
+    retryCount?: number;
   }): void {
+    // The handoff target is the next step's agent; the last step hands off
+    // to nobody. Steps run on deterministic template logic unless a caller
+    // records a real model id.
+    const defIndex = STEP_DEFS.indexOf(args.def);
+    const nextAgent =
+      defIndex >= 0 && defIndex < STEP_DEFS.length - 1 ? STEP_DEFS[defIndex + 1].agent : null;
     receipts.push({
       seq: args.def.seq,
       agent: args.def.agent,
       step: args.def.step,
-      title: args.def.title,
+      title: args.def.buildTitle ? args.def.buildTitle(ctx) : args.def.title,
       inputSummary: summarize(args.input),
       inputFull: args.input,
       outputSummary: args.outputSummary,
@@ -408,9 +550,53 @@ export async function runPipeline(
       rechained: args.def.seq >= firstChanged,
       status: args.status,
       ...(args.note ? { note: args.note } : {}),
+      model: args.model ?? "deterministic",
+      targetAgent: args.targetAgent !== undefined ? args.targetAgent : nextAgent,
+      retryCount: args.retryCount ?? 0,
       prevHash: "",
       hash: "",
     });
+  }
+
+  // Scope gate: out-of-scope tasks stop here with an honest refusal. The
+  // gate decision itself is receipted; no paid reasoning step runs and
+  // nothing is charged.
+  if (!isInScope(clean)) {
+    const gateDef: StepDef = {
+      seq: 1,
+      agent: "coordinator",
+      step: "scope-check",
+      title: "Scope check",
+      buildInput: (_ctx, task) => task,
+      execute: () => ({ outputSummary: "", detail: "" }),
+    };
+    const answer =
+      `This network only handles vendor and procurement decisions: choosing a vendor, supplier, or cloud provider ` +
+      `for an infrastructure contract, and explaining the choice with a receipt chain.\n\n` +
+      `Your task ("${summarize(clean, 200)}") is outside that scope, so the run stopped at the coordinator's scope check. ` +
+      `No reasoning steps ran and nothing was charged. The gate decision is recorded in receipt #1.\n\n` +
+      `Try a task like: "Select a vendor for our $60K annual cloud infrastructure contract."`;
+    pushReceipt({
+      def: gateDef,
+      input: clean,
+      outputSummary: "Scope check: task is not a vendor or procurement decision. Run declined before any paid reasoning step.",
+      detail:
+        `The coordinator's scope gate declined this task. This network selects vendors, suppliers, and cloud providers ` +
+        `for infrastructure contracts; the task does not ask for that. No specialist was called, no payment was taken, ` +
+        `and no vendor recommendation was produced.`,
+      payment: {
+        from: USER_WALLET,
+        to: AGENT_WALLETS.coordinator ?? USER_WALLET,
+        amountUSDC: "0",
+        txRef: "no-tx",
+        mock: MOCK_MODE,
+      },
+      status: "ok",
+      note: "out of scope: no charge",
+      targetAgent: null,
+    });
+    chainReceipts(receipts);
+    return { answer, receipts };
   }
 
   for (const def of STEP_DEFS) {
@@ -429,10 +615,11 @@ export async function runPipeline(
           to: payee,
           amountUSDC: "0",
           txRef: "no-tx",
-          mock: true,
+          mock: MOCK_MODE,
         },
         status: "failed",
         note: "specialist timeout",
+        retryCount: 0,
       });
       // Retry: pay normally and run the step.
       const payment = await payForStep({
@@ -456,6 +643,7 @@ export async function runPipeline(
         },
         status: "recovered",
         note: "retry succeeded",
+        retryCount: 1,
       });
       continue;
     }

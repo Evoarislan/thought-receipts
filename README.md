@@ -91,6 +91,13 @@ MOCK=false PRIVATE_KEY=0x... PAYEE_ADDRESS=0x... npm start
 
 In live mode the buyer signs a real authorization per step. Signed, not submitted: in x402 the seller submits the authorization onchain, the buyer only signs.
 
+Environment variables (see `.env.example` for the full list with placeholders):
+
+- `MOCK`: `true` (default) simulates payments; `false` enables live EIP-3009 signing.
+- `PRIVATE_KEY` and `PAYEE_ADDRESS`: live mode only, as shown above.
+- `OPENROUTER_API_KEY` (optional): when set, the Why box drafts its answers with real Nemotron models through OpenRouter (it tries `nvidia/nemotron-3-ultra-550b-a55b:free`, then `nvidia/nemotron-3-super-120b-a12b:free`), grounded in the receipt citations. With no key set, the Why box falls back to its built-in template answers, so the demo still runs with zero API keys.
+- `PORT`: HTTP port, default 3003.
+
 ## Demo script for judges
 
 1. Click **Run the network** with the default vendor task. Watch 7 receipts appear in the feed, each a $0.01 payment with payer, payee, and signature ref.
