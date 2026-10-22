@@ -1,0 +1,4 @@
+vendor,support_tier,support_annual_usd,sla_percent
+Nimbus Cloud,business-hours ticket queue,6000,99.9
+Stratus Systems,24/7 engineer hotline,9000,99.99
+Cirrus Compute,community forum plus tickets,4000,99.95

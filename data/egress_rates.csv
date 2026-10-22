@@ -1,0 +1,4 @@
+vendor,egress_per_gb_usd,allowance_tb,overage_per_gb_usd
+Nimbus Cloud,0.12,,0.12
+Stratus Systems,0.04,500,0.2
+Cirrus Compute,0.09,,0.09
