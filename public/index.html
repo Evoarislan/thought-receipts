@@ -22,6 +22,7 @@
     font-size: 13px; line-height: 1.5; }
   .banner.mock { background: rgba(245,185,66,.12); border: 1px solid rgba(245,185,66,.45); color: #f7cf7d; }
   .banner.live { background: rgba(110,231,160,.10); border: 1px solid rgba(110,231,160,.45); color: #a9f0c6; }
+  .banner.sample { background: rgba(124,196,255,.10); border: 1px solid rgba(124,196,255,.45); color: #bfe0ff; }
   main { max-width: 980px; margin: 0 auto; padding: 20px 24px 80px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 18px; }
   .card h2 { margin: 0 0 12px; font-size: 16px; }
@@ -48,6 +49,8 @@
   .receipt.rechained { border-color: rgba(196,167,255,.6); background: rgba(196,167,255,.05); }
   .receipt.failed { border-color: rgba(255,138,138,.55); background: rgba(255,138,138,.05); }
   .receipt.recovered { border-color: rgba(110,231,160,.55); background: rgba(110,231,160,.05); }
+  .receipt.evaluator { border-color: rgba(124,196,255,.55); background: rgba(124,196,255,.05); cursor: default; }
+  .receipt.evaluator:hover { transform: none; }
   .receipt.flash { box-shadow: 0 0 0 3px var(--blue); border-color: var(--blue); }
   .rhead { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 8px; flex-wrap: wrap; }
   .seq { font-family: ui-monospace, monospace; background: #1a2130; padding: 3px 8px; border-radius: 6px; color: var(--blue); }
@@ -80,6 +83,7 @@
     border-radius: 10px; padding: 10px 14px; font-size: 13.5px; margin-bottom: 14px; color: #bfe0ff; }
   #whyAnswer { background: #0d1119; border: 1px solid var(--line); border-radius: 10px;
     padding: 14px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; margin-top: 12px; }
+  #whyMode { margin-top: 8px; font-size: 12.5px; color: var(--blue); }
   .cites { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
   .cite { background: rgba(124,196,255,.12); border: 1px solid rgba(124,196,255,.4); color: var(--blue);
     border-radius: 999px; padding: 5px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
@@ -105,9 +109,10 @@
 <body>
 <header>
   <h1><span class="tick">✓</span> Thought Receipts</h1>
-  <p>A pay-per-thought agent network. A coordinator breaks your task into subtasks, specialist agents execute each one behind a $0.01 x402 paywall, and every payment, input, and output is logged as a hash-chained receipt. The receipt chain is the explanation of why.</p>
+  <p>A pay-per-thought agent network. A coordinator breaks your task into subtasks, specialist agents execute each one behind a $0.01 x402 paywall, and an evaluator step then verifies the recommendation against the receipts before the answer stands. Every payment, input, and output is logged as a hash-chained receipt. The receipt chain is the explanation of why.</p>
 </header>
 <div id="mockBanner" class="banner mock"></div>
+<div id="sampleBanner" class="banner sample" hidden></div>
 <main>
   <section class="card">
     <label for="task">Task for the agent network</label>
@@ -135,7 +140,7 @@
     </h2>
     <div id="feed"></div>
     <div id="tamperOut"></div>
-    <p class="hint" style="margin-top:12px">Click any receipt to challenge that step: edit its input and re-run everything downstream. "Simulate tampering" alters a client-side copy only, to show what verification reports when a receipt is edited.</p>
+    <p class="hint" style="margin-top:12px">Click any paid receipt to challenge that step: edit its input and re-run everything downstream. The evaluator receipt (last, blue) is the verification step and cannot be challenged. "Simulate tampering" alters a client-side copy only, to show what verification reports when a receipt is edited.</p>
   </section>
 
   <section class="card" id="billWrap" hidden>
@@ -153,6 +158,7 @@
         <span class="hint">Answers are grounded in the receipts above, with citations.</span>
       </div>
       <div id="whyAnswer" hidden></div>
+      <div id="whyMode"></div>
       <div class="cites" id="whyCites"></div>
     </div>
   </section>
@@ -178,7 +184,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-let HEALTH = { mock: true, pricePerStepUSDC: "0.01", stepsPerRun: 7 };
+let HEALTH = { mock: true, sampleMode: false, pricePerStepUSDC: "0.01", stepsPerRun: 7 };
 let currentTask = "";
 let currentReceipts = [];
 let challengeSeq = 0;
@@ -201,6 +207,13 @@ async function boot() {
   } else {
     banner.className = "banner live";
     banner.textContent = "LIVE MODE: real EIP-3009 authorizations are signed on Base Sepolia. Authorizations are signed, not submitted onchain.";
+  }
+  const sampleBanner = $("sampleBanner");
+  if (HEALTH.sampleMode) {
+    sampleBanner.hidden = false;
+    sampleBanner.textContent = "SAMPLE MODE: this server makes no external network calls. Reasoning, why answers, and the evaluator checks all run on the built-in deterministic path over the bundled sample data, so the demo works with no API keys. Restart with SAMPLE_MODE=false to enable the model path.";
+  } else {
+    sampleBanner.hidden = true;
   }
   const total = (Number(HEALTH.pricePerStepUSDC) * HEALTH.stepsPerRun).toFixed(2);
   $("runBtn").textContent = `Run the network ($${total})`;
@@ -225,8 +238,10 @@ function statusTags(r) {
 
 function receiptCard(r, idx) {
   const el = document.createElement("article");
+  const isEvaluator = r.agent === "evaluator";
   const cls = "receipt" + (r.rechained ? " rechained" : "") +
-    (r.status === "failed" ? " failed" : "") + (r.status === "recovered" ? " recovered" : "");
+    (r.status === "failed" ? " failed" : "") + (r.status === "recovered" ? " recovered" : "") +
+    (isEvaluator ? " evaluator" : "");
   el.className = cls;
   el.id = `rc-${idx}`;
   el.dataset.seq = String(r.seq);
@@ -241,8 +256,10 @@ function receiptCard(r, idx) {
     `<div><span class="k">out:</span> ${escapeHtml(r.outputSummary)}</div></div>` +
     (r.note ? `<div class="rnote">${escapeHtml(r.note)}</div>` : "") +
     `<div class="rtx">tx ${escapeHtml(String(r.txRef).slice(0, 26))}${String(r.txRef).length > 26 ? "..." : ""} · hash ${escapeHtml(String(r.hash).slice(0, 12))}...</div>` +
-    `<div class="rhint">Click to challenge this step</div>`;
-  el.addEventListener("click", () => openChallenge(r));
+    (isEvaluator
+      ? `<div class="rhint">Verification step: checks the answer against the receipts above. Not a paid step, and not challengeable.</div>`
+      : `<div class="rhint">Click to challenge this step</div>`);
+  if (!isEvaluator) el.addEventListener("click", () => openChallenge(r));
   return el;
 }
 
@@ -257,6 +274,7 @@ function renderRun(data, noteText) {
   $("billWrap").hidden = true;
   $("answerWrap").hidden = true;
   $("whyAnswer").hidden = true;
+  $("whyMode").textContent = "";
   $("whyCites").innerHTML = "";
   if (noteText) { $("note").hidden = false; $("note").textContent = noteText; }
   else { $("note").hidden = true; }
@@ -271,7 +289,7 @@ function renderRun(data, noteText) {
 }
 
 function renderBill(bill, answer) {
-  const paid = bill.lines.filter((l) => l.status !== "failed").length;
+  const paid = bill.lines.filter((l) => l.status !== "failed" && l.agent !== "evaluator").length;
   $("billWow").textContent = `This answer cost $${bill.totalUSDC} across ${paid} reasoning step${paid === 1 ? "" : "s"}. Every step is receipted above.`;
   $("billBody").innerHTML =
     bill.lines.map((l) =>
@@ -334,6 +352,9 @@ async function askWhy() {
     if (data.error) throw new Error(data.error);
     $("whyAnswer").hidden = false;
     $("whyAnswer").textContent = data.answer;
+    $("whyMode").textContent = data.mode === "model"
+      ? "Answer mode: drafted by the model, then verified against the cited receipts before being shown."
+      : "Answer mode: template, composed from the cited receipts. (Model drafts, when a key is configured, are shown only after the same verification.)";
     const cites = $("whyCites");
     cites.innerHTML = "";
     (data.citations || []).forEach((seq) => {
@@ -346,6 +367,7 @@ async function askWhy() {
   } catch (e) {
     $("whyAnswer").hidden = false;
     $("whyAnswer").textContent = "Could not answer: " + e.message;
+    $("whyMode").textContent = "";
     $("whyCites").innerHTML = "";
   } finally {
     btn.disabled = false;

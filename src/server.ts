@@ -1,11 +1,11 @@
 /**
  * Thought Receipts server: static frontend + JSON API.
  *
- *   GET  /api/health     -> { ok, mock, pricePerStepUSDC, stepsPerRun }
- *   POST /api/run        -> { answer, bill, receipts, mock }
- *   POST /api/challenge  -> { answer, bill, receipts, changedFrom, mock }
+ *   GET  /api/health     -> { ok, mock, sampleMode, pricePerStepUSDC, stepsPerRun }
+ *   POST /api/run        -> { answer, bill, receipts, mock, sampleMode }
+ *   POST /api/challenge  -> { answer, bill, receipts, changedFrom, mock, sampleMode }
  *   GET  /api/verify     -> { valid } or { valid: false, brokenAt }
- *   POST /api/why        -> { answer, citations }
+ *   POST /api/why        -> { answer, citations, mode }
  *
  * /api/challenge re-runs the pipeline from one receipt with edited input and
  * returns the new chain. Steps before the challenged one are unchanged.
@@ -18,7 +18,7 @@ import { createServer, IncomingMessage, ServerResponse } from "http";
 import { readFile } from "fs/promises";
 import { dirname, join, normalize } from "path";
 import { fileURLToPath } from "url";
-import { runPipeline, STEP_COUNT } from "./agents.js";
+import { runPipeline, SAMPLE_MODE, STEP_COUNT } from "./agents.js";
 import { buildBill, verifyChain, type Receipt } from "./receipts.js";
 import { answerWhy } from "./why.js";
 import { MOCK_MODE, PRICE_PER_STEP_USDC } from "./x402.js";
@@ -79,6 +79,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       json(res, 200, {
         ok: true,
         mock: MOCK_MODE,
+        sampleMode: SAMPLE_MODE,
         pricePerStepUSDC: PRICE_PER_STEP_USDC.toFixed(2),
         stepsPerRun: STEP_COUNT,
       });
@@ -101,7 +102,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       const { answer, receipts } = await runPipeline(body.task, new Map(), chaos);
       latestReceipts = receipts;
-      json(res, 200, { answer, bill: buildBill(receipts), receipts, mock: MOCK_MODE });
+      json(res, 200, { answer, bill: buildBill(receipts), receipts, mock: MOCK_MODE, sampleMode: SAMPLE_MODE });
       return;
     }
 
@@ -126,6 +127,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         receipts,
         changedFrom: seq,
         mock: MOCK_MODE,
+        sampleMode: SAMPLE_MODE,
       });
       return;
     }
@@ -141,8 +143,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
     if (req.method === "POST" && pathname === "/api/why") {
       const body = JSON.parse(await readBody(req)) as { question?: string };
-      const { answer, citations } = await answerWhy(latestReceipts, body.question ?? "");
-      json(res, 200, { answer, citations });
+      const { answer, citations, mode } = await answerWhy(latestReceipts, body.question ?? "");
+      json(res, 200, { answer, citations, mode });
       return;
     }
 
@@ -156,5 +158,5 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 });
 
 server.listen(PORT, () => {
-  console.log(`Thought Receipts listening on :${PORT} (mock=${MOCK_MODE})`);
+  console.log(`Thought Receipts listening on :${PORT} (mock=${MOCK_MODE}, sampleMode=${SAMPLE_MODE})`);
 });

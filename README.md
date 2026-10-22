@@ -4,7 +4,9 @@ The pay-per-thought agent network. Open Agent Hackathon 2026, Track 2: **The Age
 
 ## The idea
 
-A coordinator agent breaks your task into subtasks. Three specialist agents (research, compute, synthesize) execute each subtask behind a **$0.01 x402 paywall**. Every payment, every input, and every output is logged as a receipt.
+A coordinator agent breaks your task into subtasks. Three specialist agents (research, compute, synthesize) execute each subtask behind a **$0.01 x402 paywall**. Every payment, every input, and every output is logged as a receipt. Then a fourth role, the **evaluator**, checks the finished recommendation against the receipts before the answer stands.
+
+The system is honestly a coordinator plus specialists plus an evaluator, not a free-form swarm: the specialists run in a planned order, and the evaluator is the second interaction, a verification pass over their work. The evaluator recomputes the winner from the TCO table recorded in the compute receipt, confirms every dollar figure in the recommendation appears in an earlier receipt, and, when a model is configured, adds a model critique of the synthesis. Its verdict is its own receipt (#8, free). If verification fails, the discrepancy is recorded there and the final answer is annotated, never silently passed.
 
 The "why" is the receipt chain. Ask why the agent did something, and it shows you the receipt for the exact reasoning step: what it was paid, what it was told, what it produced.
 
@@ -18,9 +20,10 @@ Three things make it memorable:
 2. **Challenge a step.** Click any receipt, edit that step's input, and watch the downstream chain re-execute. Double the data transfer volume at the workload step and watch the winner flip from Stratus Systems to Cirrus Compute as the egress math reprices itself.
 3. **Tamper-evident receipts.** Every receipt is hash-chained (sha256 over the previous hash plus the receipt body). Edit one character and verification breaks downstream of the edit. The **Verify chain** button proves it live.
 
-Two more demo beats:
+Three more demo beats:
 
-- **Ask why.** A "Why?" box answers questions about the run in plain English, grounded in the receipt chain with clickable citations. Try: "why did you pick Stratus Systems?"
+- **Ask why.** A "Why?" box answers questions about the run in plain English, grounded in the receipt chain with clickable citations. Try: "why did you pick Stratus Systems?" The answer is labeled with the mode that produced it: a model draft (shown only after its dollar figures and vendor names are verified against the cited receipts) or the built-in template.
+- **The evaluator.** Receipt #8 is a free verification step, not a paid thought. Open it to see the checks: the winner recomputed from the recorded TCO figures, the figure-by-figure trace of the recommendation back to earlier receipts, and a model critique when one is configured.
 - **Break and recover.** Tick "Simulate a step failure" before running. That step's first attempt fails (a $0 receipt records the timeout), the coordinator retries automatically (a "recovered" receipt records the retry), and the pipeline completes. The bill still totals $0.07.
 
 ## The non-obvious winner
@@ -59,7 +62,12 @@ synthesize.write-recommendation  $0.01 -> receipt #6
 coordinator.finalize ........... $0.01 -> receipt #7
   |
   v
-answer + itemized bill ($0.07)
+evaluator.evaluate ............. $0.00 -> receipt #8 (verification: winner recomputed
+  |                                            from the recorded TCO table, every
+  |                                            dollar figure traced to an earlier
+  |                                            receipt, optional model critique)
+  v
+answer + itemized bill ($0.07 across the 7 paid steps; the evaluator is free)
 ```
 
 Payments use the x402 pattern with EIP-3009 USDC authorizations on Base Sepolia (see `src/x402.ts`, reused from our tested x402 buyer). Mock mode is the default: payments are simulated with fake signature refs and the UI says so loudly.
@@ -76,12 +84,12 @@ Open http://localhost:3003. The demo task is prefilled: "Select a vendor for our
 
 API:
 
-- `GET /api/health` -> `{ ok, mock, pricePerStepUSDC, stepsPerRun }`
-- `POST /api/run` with `{ "task": "..." }` -> `{ answer, bill, receipts, mock }`
+- `GET /api/health` -> `{ ok, mock, sampleMode, pricePerStepUSDC, stepsPerRun }`
+- `POST /api/run` with `{ "task": "..." }` -> `{ answer, bill, receipts, mock, sampleMode }`
 - `POST /api/run` with `{ "task": "...", "chaos": { "failStep": 3 } }` -> same, but step 3 fails once and recovers
-- `POST /api/challenge` with `{ "task": "...", "receiptSeq": 2, "newInput": "..." }` -> `{ answer, bill, receipts, changedFrom, mock }`
+- `POST /api/challenge` with `{ "task": "...", "receiptSeq": 2, "newInput": "..." }` -> `{ answer, bill, receipts, changedFrom, mock, sampleMode }`
 - `GET /api/verify` -> `{ valid: true }` or `{ valid: false, brokenAt: <seq> }`
-- `POST /api/why` with `{ "question": "..." }` -> `{ answer, citations: [<seq>, ...] }`
+- `POST /api/why` with `{ "question": "..." }` -> `{ answer, citations: [<seq>, ...], mode: "model" | "template" }`
 
 Live mode (real EIP-3009 signing on Base Sepolia):
 
@@ -95,17 +103,32 @@ Environment variables (see `.env.example` for the full list with placeholders):
 
 - `MOCK`: `true` (default) simulates payments; `false` enables live EIP-3009 signing.
 - `PRIVATE_KEY` and `PAYEE_ADDRESS`: live mode only, as shown above.
-- `OPENROUTER_API_KEY` (optional): when set, the Why box drafts its answers with real Nemotron models through OpenRouter (it tries `nvidia/nemotron-3-ultra-550b-a55b:free`, then `nvidia/nemotron-3-super-120b-a12b:free`), grounded in the receipt citations. With no key set, the Why box falls back to its built-in template answers, so the demo still runs with zero API keys.
+- `OPENROUTER_API_KEY` (optional): when set, the Why box drafts its answers with real Nemotron models through OpenRouter (it tries `nvidia/nemotron-3-ultra-550b-a55b:free`, then `nvidia/nemotron-3-super-120b-a12b:free`), and the evaluator adds a model critique of the recommendation. A Why draft is shown only after every dollar figure and vendor name in it is verified against the cited receipts; on any mismatch the draft is discarded and the template answer is returned. With no key set, the Why box uses its built-in template answers and the evaluator runs its deterministic checks only, so the demo still runs with zero API keys.
+- `SAMPLE_MODE`: `true` runs the server fully offline (see Sample mode below). Default `false`.
 - `PORT`: HTTP port, default 3003.
+
+## Sample mode
+
+```bash
+SAMPLE_MODE=true npm start
+```
+
+Sample mode exists for judges and reviewers who have no API keys. With `SAMPLE_MODE=true`:
+
+- The server makes **no external network calls at all**. The model seam refuses to run even if `OPENROUTER_API_KEY` is set.
+- Reasoning runs on the deterministic path over the bundled sample data (the fictional vendor catalog), the Why box answers from its templates, and the evaluator runs its deterministic checks only, with no model critique.
+- Sample mode is disclosed everywhere it matters: `GET /api/health` and the run payloads carry `sampleMode: true`, and the UI shows a SAMPLE MODE banner next to the payment-mode banner.
+
+With `SAMPLE_MODE=false` (the default), the behavior above flips only where a model is configured: the Why box drafts with the model (verified against the citations before being shown) and the evaluator adds its critique. Payments are governed separately by `MOCK`; sample mode says nothing about payments, and in the default configuration they are simulated.
 
 ## Demo script for judges
 
-1. Click **Run the network** with the default vendor task. Watch 7 receipts appear in the feed, each a $0.01 payment with payer, payee, and signature ref.
-2. Read the itemized bill: "This answer cost $0.07 across 7 reasoning steps."
+1. Click **Run the network** with the default vendor task. Watch 8 receipts appear in the feed: 7 paid reasoning steps at $0.01 each with payer, payee, and signature ref, then a free eighth receipt from the evaluator.
+2. Open receipt **#8 (Evaluator verification)**: verdict PASS, with the winner recomputed from the recorded TCO table and every dollar figure in the recommendation traced to an earlier receipt. Note the bill still reads "This answer cost $0.07 across 7 reasoning steps": the evaluator is a verification step and is not charged.
 3. Read the recommendation: **Stratus Systems at $237K 3-year TCO**, beating Cirrus ($300K) and Nimbus ($306K). Point out the twist: Nimbus has the cheapest headline price ($48K/yr) and still finishes last, because its uncapped $0.12/GB egress costs $48K/yr at this volume. The obvious pick is not the right pick.
 4. Click receipt **#3 (Profile the workload)**. Change its input to "double the data transfer volume". Click **Re-run from this step**.
 5. Watch steps 3 through 7 re-execute (marked "re-executed"): the TCO table reprices at 800TB/yr, Stratus blows through its 500TB egress cap into $0.20/GB overage, and the winner flips to **Cirrus Compute at $408K** (Stratus $429K, Nimbus $450K). Steps 1 and 2 stay unchanged.
-6. Ask **"why did you pick Stratus Systems?"** in the Why box. The answer cites the compute and recommendation receipts with the TCO numbers. Click a citation chip to jump to that receipt.
+6. Ask **"why did you pick Stratus Systems?"** in the Why box. The answer cites the compute and recommendation receipts with the TCO numbers, and the line under the answer names the mode that produced it (template here, since no API key is configured; with a key, a model draft appears only after it passes verification against the cited receipts). Click a citation chip to jump to that receipt.
 7. Click **Verify chain**: the badge reads VALID. Then click **Simulate tampering** (client-side only): a copy of one receipt is edited, and the local checker reports `{ valid: false, brokenAt: 3 }`. One edited character breaks the chain from that point on.
 8. Tick **"Simulate a step failure"** and run again: step 2's first attempt fails (a red $0 receipt records the timeout), the retry succeeds (green "recovered" badge), the pipeline completes, and the bill still totals $0.07.
 9. Point at the mock banner: all payments are simulated in this demo; flip `MOCK=false` for real EIP-3009 signatures. Vendor names and quotes are fictional and illustrative.
@@ -113,17 +136,19 @@ Environment variables (see `.env.example` for the full list with placeholders):
 ## Repo layout
 
 - `src/x402.ts` ... x402 payment helper (mock + live EIP-3009 signing)
-- `src/agents.ts` ... coordinator + 3 specialists, deterministic mock reasoning, LLM adapter seam (`reasonWithModel`), chaos failure/recovery mode
+- `src/agents.ts` ... coordinator + 3 specialists + evaluator verification step, deterministic reasoning, LLM adapter seam (`reasonWithModel`), SAMPLE_MODE flag, chaos failure/recovery mode
 - `src/receipts.ts` ... hash-chained receipts (sha256, prevHash), tamper verification, itemized bill
-- `src/why.ts` ... "Why?" answering over the receipt chain with citations, LLM upgrade seam
+- `src/why.ts` ... "Why?" answering over the receipt chain with citations; model drafts are verified against the cited receipts before use, and the answer reports its mode
 - `src/server.ts` ... plain `http` server, JSON API, static frontend
-- `public/index.html` ... dark single-page UI: live feed, bill, challenge panel, Why box, verify badge, tamper simulation
+- `public/index.html` ... dark single-page UI: live feed, bill, challenge panel, Why box with answer-mode label, verify badge, tamper simulation
 
 ## Honest notes
 
-- Reasoning is deterministic mock logic keyed on the task text, with an LLM adapter seam for a future upgrade. It runs with zero API keys.
+- The pipeline is a coordinator plus three specialists running a planned sequence, plus an evaluator that verifies the result against the receipts. It is not a free-form multi-agent swarm, and the README does not claim otherwise.
+- Core reasoning is deterministic logic keyed on the task text. The model, when a key is configured, does two bounded jobs: drafting Why answers (verified against the cited receipts before being shown) and critiquing the synthesis inside the evaluator receipt. With no key, both fall back to deterministic behavior and the demo runs with zero API keys.
+- `SAMPLE_MODE=true` disables the model seam entirely, so a run makes no external network calls. That is the mode to judge in when you have no keys.
 - Mock mode simulates payments. Nothing here moves real money unless you set `MOCK=false` with your own key.
-- The receipt chain, the bill math, and the challenge re-execution are all real and deterministic.
+- The receipt chain, the bill math, the evaluator checks, and the challenge re-execution are all real and deterministic.
 
 ## License
 

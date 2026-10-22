@@ -140,6 +140,8 @@ export function buildBill(receipts: Receipt[]): Bill {
 
 /** "This answer cost $0.07 across 7 reasoning steps." */
 export function billWowLine(bill: Bill): string {
-  const n = bill.lines.filter((l) => l.status !== "failed").length;
+  // The evaluator is a free system verification step, not a paid reasoning
+  // step, so it never counts toward the step total.
+  const n = bill.lines.filter((l) => l.status !== "failed" && l.agent !== "evaluator").length;
   return `This answer cost $${bill.totalUSDC} across ${n} reasoning step${n === 1 ? "" : "s"}. Every step is receipted above.`;
 }

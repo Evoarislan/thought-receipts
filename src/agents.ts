@@ -3,14 +3,21 @@
  * subtasks, then three specialist agents (research, compute, synthesize) each
  * execute behind a $0.01 x402 paywall. Every step pays first, reasons second,
  * and emits a receipt third. The receipt chain is the explanation of "why".
+ * After the coordinator assembles the answer, a free evaluator step verifies
+ * the recommendation against the receipts themselves before the run returns.
  *
  * Demo scenario: vendor selection for a cloud infrastructure contract. The
  * receipt chain explains a decision with real dollars behind it: quotes in,
  * 3-year total cost of ownership out, recommendation with the math attached.
  *
- * Reasoning is deterministic mock logic so the demo runs with zero API keys.
- * LLM adapter seam: replace any executor's body with a call to
- * reasonWithModel() later; the receipt shape stays identical.
+ * Reasoning is deterministic logic so the demo runs with zero API keys. Two
+ * model seams exist on top of it: the why box drafts answers through
+ * reasonWithModel() (see why.ts), and the evaluator adds a model critique of
+ * the synthesis when a model is configured.
+ *
+ * SAMPLE_MODE=true (see below) disables every model call, so a run makes no
+ * external network requests at all. That is the documented mode for judges
+ * who have no API keys.
  */
 import { payForStep, AGENT_WALLETS, USER_WALLET, PRICE_PER_STEP_USDC, MOCK_MODE } from "./x402.js";
 import { chainReceipts, type Receipt, type ReceiptStatus } from "./receipts.js";
@@ -18,7 +25,17 @@ import { chainReceipts, type Receipt, type ReceiptStatus } from "./receipts.js";
 export const STEP_COUNT = 7;
 export const PRICE_PER_STEP = PRICE_PER_STEP_USDC;
 
-export type AgentName = "coordinator" | "research" | "compute" | "synthesize";
+/**
+ * SAMPLE_MODE=true: fully offline sample run. No external network calls are
+ * made at all (reasonWithModel refuses to run), reasoning stays on the
+ * deterministic path, the why box uses its template answers, and the
+ * evaluator runs its deterministic checks only. Disclosed in /api/health,
+ * in the run payloads, and in a UI banner. Default: false.
+ */
+export const SAMPLE_MODE =
+  (process.env.SAMPLE_MODE ?? "").trim().toLowerCase() === "true";
+
+export type AgentName = "coordinator" | "research" | "compute" | "synthesize" | "evaluator";
 
 export interface Vendor {
   name: string;
@@ -90,18 +107,38 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
   }
 }
 
-export async function reasonWithModel(prompt: string): Promise<string> {
+export interface ModelResult {
+  text: string;
+  /** The exact model id that produced the text. */
+  model: string;
+}
+
+/**
+ * Like reasonWithModel, but also reports which model answered, so callers
+ * (the evaluator) can record the truth in their receipt. In SAMPLE_MODE this
+ * throws before any network call is attempted, even if a key is set.
+ */
+export async function reasonWithModelDetailed(prompt: string): Promise<ModelResult> {
+  if (SAMPLE_MODE) {
+    throw new Error(
+      "SAMPLE_MODE is on: model calls are disabled, so a run makes no external network requests."
+    );
+  }
   const apiKey = (process.env.OPENROUTER_API_KEY ?? "").trim();
   if (!apiKey) throw new Error(NOT_CONFIGURED);
   let lastErr: unknown = null;
   for (const model of OPENROUTER_MODELS) {
     try {
-      return await callOpenRouter(prompt, apiKey, model);
+      return { text: await callOpenRouter(prompt, apiKey, model), model };
     } catch (err) {
       lastErr = err;
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+export async function reasonWithModel(prompt: string): Promise<string> {
+  return (await reasonWithModelDetailed(prompt)).text;
 }
 
 export function parseTask(task: string): TaskProfile {
@@ -281,6 +318,11 @@ interface StepDef {
   execute: (ctx: Ctx, input: string) => StepOutput;
 }
 
+/** "Stratus Systems" -> "Stratus Systems'"; "Nimbus Cloud" -> "Nimbus Cloud's". */
+function possessive(name: string): string {
+  return name.endsWith("s") ? `${name}'` : `${name}'s`;
+}
+
 function summarize(s: string, max = 140): string {
   const oneLine = s.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? `${oneLine.slice(0, max - 3)}...` : oneLine;
@@ -403,11 +445,13 @@ const STEP_DEFS: StepDef[] = [
       ctx.winner = rows[0];
       const order = rows.map((r) => `${r.vendor.name} ${fmtK(r.tco)}`).join(", ");
       const cheapestHeadline = rows.reduce((a, b) => (b.vendor.headlineAnnual < a.vendor.headlineAnnual ? b : a));
+      const runnerUp = rows[1];
       return {
         outputSummary: `${ctx.profile.termYears}-year TCO at ${ctx.volumeTB}TB/yr: ${order}. Winner: ${ctx.winner.vendor.name}.`,
         detail:
           tcoTable(rows, ctx.volumeTB, ctx.profile.termYears) +
-          `\n\nWinner on total cost: ${ctx.winner.vendor.name} at ${fmtK(ctx.winner.tco)}. ` +
+          `\n\nWinner on total cost: ${ctx.winner.vendor.name} at ${fmtK(ctx.winner.tco)}, ` +
+          `${fmtK(runnerUp.tco - ctx.winner.tco)} below the runner-up ${runnerUp.vendor.name} (${fmtK(runnerUp.tco)}). ` +
           `Headline price misleads: the cheapest headline (${cheapestHeadline.vendor.name}, ${fmt(cheapestHeadline.vendor.headlineAnnual)}/yr) finishes ` +
           `${rows.indexOf(cheapestHeadline) + 1} of 3 because egress dominates the total.`,
       };
@@ -450,7 +494,7 @@ const STEP_DEFS: StepDef[] = [
           `Rationale: ${ctx.profile.termYears}-year TCO of ${fmtK(w.tco)} at ${ctx.volumeTB}TB/yr egress, ` +
           `${fmtK(savingVsRunnerUp)} below ${runnerUp.vendor.name} (${fmtK(runnerUp.tco)}). ` +
           `Nimbus Cloud has the cheapest headline (${fmt(nimbus.vendor.headlineAnnual)}/yr) but finishes at ${fmtK(nimbus.tco)} because its uncapped ` +
-          `${fmt(nimbus.vendor.egressPerGB)}/GB egress costs ${fmt(nimbus.egressAnnual)}/yr at this volume. ${budgetClaim}, where ${w.vendor.name}'s ${w.vendor.differentiator} wins. ` +
+          `${fmt(nimbus.vendor.egressPerGB)}/GB egress costs ${fmt(nimbus.egressAnnual)}/yr at this volume. ${budgetClaim}, where ${possessive(w.vendor.name)} ${w.vendor.differentiator} wins. ` +
           `${supportClaim} ${slaClaim}`;
       }
       return {
@@ -479,6 +523,114 @@ const STEP_DEFS: StepDef[] = [
     },
   },
 ];
+
+// --- Evaluator pass ----------------------------------------------------------
+// After the specialists finish, an evaluator step checks the synthesis
+// against the receipts themselves, not against the pipeline's own claims:
+//
+//   1. It re-parses the TCO table recorded in the compute receipt, recomputes
+//      the winner (lowest TCO), and confirms the recommendation names that
+//      winner.
+//   2. It confirms every dollar figure in the recommendation text appears in
+//      an earlier receipt's recorded output, so the synthesis cannot invent
+//      a number.
+//   3. When a model is configured (and SAMPLE_MODE is off), the model adds a
+//      critique of the synthesis against the receipt summaries.
+//
+// The evaluator emits its own $0 receipt (a system verification step, not a
+// paid reasoning step). A failed check is recorded on that receipt and the
+// final answer is annotated, never silently passed.
+
+interface Evaluation {
+  verdict: "pass" | "fail";
+  checks: string[];
+  discrepancies: string[];
+  /** Winner recomputed from the recorded TCO table, if one was found. */
+  recomputedWinner: string | null;
+  critique: string | null;
+  critiqueModel: string | null;
+}
+
+/** Dollar figures in a text, normalized ("$48,000" and "$237K" kept distinct). */
+function dollarFigures(text: string): string[] {
+  return (text.match(/\$[\d,]+(?:\.\d+)?K?/g) ?? []).map((s) => s.replace(/,/g, ""));
+}
+
+/** Parse the TCO table recorded in the compute receipt's detail text. */
+function parseRecordedTco(detail: string): { vendor: string; tcoK: number }[] {
+  const rows: { vendor: string; tcoK: number }[] = [];
+  for (const line of detail.split("\n")) {
+    const name = /^- (.+?): compute /.exec(line.trim());
+    const tco = /= \$([\d,]+)K TCO/.exec(line);
+    if (name && tco) rows.push({ vendor: name[1], tcoK: Number(tco[1].replace(/,/g, "")) });
+  }
+  return rows;
+}
+
+function deterministicEvaluation(receipts: Receipt[]): Evaluation {
+  const checks: string[] = [];
+  const discrepancies: string[] = [];
+
+  const lastOk = (step: string): number =>
+    receipts.map((r, i) => ({ r, i })).filter(({ r }) => r.step === step && r.status !== "failed").pop()?.i ?? -1;
+  const computeIdx = lastOk("compute-tco");
+  const recoIdx = lastOk("write-recommendation");
+
+  let recomputedWinner: string | null = null;
+  if (computeIdx < 0) {
+    discrepancies.push("No compute receipt found in the chain, so no winner can be recomputed.");
+  } else if (recoIdx < 0) {
+    discrepancies.push("No recommendation receipt found in the chain, so there is nothing to verify.");
+  } else {
+    const table = parseRecordedTco(receipts[computeIdx].detail);
+    if (table.length === 0) {
+      discrepancies.push("The compute receipt records no TCO table, so the winner cannot be recomputed.");
+    } else {
+      const sorted = [...table].sort((a, b) => a.tcoK - b.tcoK);
+      recomputedWinner = sorted[0].vendor;
+      checks.push(
+        `Winner recomputed from the TCO table recorded in receipt #${receipts[computeIdx].seq}: ` +
+          `${sorted.map((r) => `${r.vendor} $${r.tcoK}K`).join(", ")}. Lowest: ${recomputedWinner}.`
+      );
+      const recommendation = receipts[recoIdx].detail;
+      if (!recommendation.includes(recomputedWinner)) {
+        discrepancies.push(
+          `The recommendation in receipt #${receipts[recoIdx].seq} does not name ${recomputedWinner}, the winner recomputed from the recorded TCO figures.`
+        );
+      } else {
+        checks.push(`The recommendation names ${recomputedWinner}, matching the recomputed winner.`);
+      }
+
+      // Every dollar figure in the recommendation must trace to an earlier
+      // receipt's recorded output (its detail or output summary).
+      const corpus = receipts
+        .slice(0, recoIdx)
+        .map((r) => `${r.detail}\n${r.outputSummary}`)
+        .join("\n");
+      const recorded = new Set(dollarFigures(corpus));
+      const figures = [...new Set(dollarFigures(recommendation))];
+      const untraced = figures.filter((f) => !recorded.has(f));
+      if (untraced.length > 0) {
+        discrepancies.push(
+          `Dollar figure${untraced.length === 1 ? "" : "s"} in the recommendation appear in no earlier receipt: ${untraced.join(", ")}.`
+        );
+      } else {
+        checks.push(
+          `All ${figures.length} dollar figures in the recommendation appear in earlier receipts: ${figures.join(", ")}.`
+        );
+      }
+    }
+  }
+
+  return {
+    verdict: discrepancies.length === 0 ? "pass" : "fail",
+    checks,
+    discrepancies,
+    recomputedWinner,
+    critique: null,
+    critiqueModel: null,
+  };
+}
 
 export interface PipelineRun {
   answer: string;
@@ -526,12 +678,17 @@ export async function runPipeline(
     targetAgent?: string | null;
     retryCount?: number;
   }): void {
-    // The handoff target is the next step's agent; the last step hands off
-    // to nobody. Steps run on deterministic template logic unless a caller
-    // records a real model id.
+    // The handoff target is the next step's agent. The last pipeline step
+    // hands off to the evaluator; the evaluator hands off to nobody. Steps
+    // run on deterministic template logic unless a caller records a real
+    // model id.
     const defIndex = STEP_DEFS.indexOf(args.def);
     const nextAgent =
-      defIndex >= 0 && defIndex < STEP_DEFS.length - 1 ? STEP_DEFS[defIndex + 1].agent : null;
+      defIndex >= 0 && defIndex < STEP_DEFS.length - 1
+        ? STEP_DEFS[defIndex + 1].agent
+        : defIndex === STEP_DEFS.length - 1
+          ? "evaluator"
+          : null;
     receipts.push({
       seq: args.def.seq,
       agent: args.def.agent,
@@ -672,7 +829,80 @@ export async function runPipeline(
     });
   }
 
+  // Evaluator pass: verify the finished synthesis against the receipts, then
+  // record the verdict as a free receipt of its own. A model critique joins
+  // the deterministic checks when a model is configured; SAMPLE_MODE skips
+  // the model entirely, so no network call is attempted.
+  const evaluation = deterministicEvaluation(receipts);
+  if (!SAMPLE_MODE) {
+    try {
+      const receiptLines = receipts
+        .filter((r) => r.status !== "failed")
+        .map((r) => `#${r.seq} [${r.agent}] ${r.title}: ${r.outputSummary}`)
+        .join("\n");
+      const { text, model } = await reasonWithModelDetailed(
+        `You are the evaluator agent in a pay-per-thought agent network. The network produced this vendor recommendation:\n\n${ctx.recommendation}\n\n` +
+          `The receipts recorded during the run say:\n${receiptLines}\n\n` +
+          `Critique the recommendation against the receipts in two or three plain sentences. Say whether the receipts support its claims, and name any claim they do not support. Do not invent numbers.`
+      );
+      evaluation.critique = text.replace(/\n{3,}/g, "\n\n").trim().slice(0, 1200);
+      evaluation.critiqueModel = model;
+    } catch {
+      // No model configured: the deterministic checks stand on their own.
+    }
+  }
+
+  const evalDef: StepDef = {
+    seq: STEP_COUNT + 1,
+    agent: "evaluator",
+    step: "evaluate",
+    title: "Evaluator verification",
+    buildInput: (c) => `verify recommendation: ${c.winner?.vendor.name ?? "undecided"}`,
+    execute: () => ({ outputSummary: "", detail: "" }),
+  };
+  const evalChecks = evaluation.checks.map((c) => `- ${c}`).join("\n");
+  const evalProblems = evaluation.discrepancies.map((d) => `- ${d}`).join("\n");
+  pushReceipt({
+    def: evalDef,
+    input: evalDef.buildInput(ctx, clean),
+    outputSummary:
+      evaluation.verdict === "pass"
+        ? `Evaluator: PASS. The recommendation was verified against the receipts: the winner recomputed from the recorded TCO figures matches, and every dollar figure in the recommendation traces to an earlier receipt.${evaluation.critique ? " A model critique is recorded in this receipt." : ""}`
+        : `Evaluator: FAIL. ${evaluation.discrepancies.join(" ")}`,
+    detail:
+      `Evaluator verification of the recommendation against the receipt chain.\n\nChecks:\n${evalChecks || "- none ran"}` +
+      (evaluation.discrepancies.length > 0 ? `\n\nDiscrepancies:\n${evalProblems}` : `\n\nDiscrepancies: none.`) +
+      (evaluation.critique
+        ? `\n\nModel critique (${evaluation.critiqueModel}):\n${evaluation.critique}`
+        : `\n\nModel critique: none. ${SAMPLE_MODE ? "SAMPLE_MODE is on, so no model was called." : "No model is configured; the deterministic checks above are the whole evaluation."}`),
+    payment: {
+      from: USER_WALLET,
+      to: AGENT_WALLETS.evaluator ?? USER_WALLET,
+      amountUSDC: "0",
+      txRef: "no-tx",
+      mock: MOCK_MODE,
+    },
+    status: "ok",
+    note: "verification step: no charge",
+    model: evaluation.critiqueModel
+      ? `deterministic checks + ${evaluation.critiqueModel} critique`
+      : "deterministic",
+    targetAgent: null,
+  });
+
+  // A failed verification is never silently passed: the returned answer is
+  // annotated with the discrepancy (and the recomputed winner, when known).
+  let answer = ctx.finalAnswer;
+  if (evaluation.verdict === "fail") {
+    answer +=
+      `\n\nEvaluator note: verification FAILED. ${evaluation.discrepancies.join(" ")}` +
+      (evaluation.recomputedWinner
+        ? ` Recomputed from the TCO figures recorded in the receipts, the winner is ${evaluation.recomputedWinner}.`
+        : "") +
+      ` Treat the recommendation above as unverified until this is resolved.`;
+  }
+
   // Seal the chain: every receipt gets prevHash/hash in order.
   chainReceipts(receipts);
-  return { answer: ctx.finalAnswer, receipts };
+  return { answer, receipts };
 }
