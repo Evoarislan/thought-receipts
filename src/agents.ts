@@ -169,8 +169,16 @@ export async function reasonWithModelDetailed(prompt: string): Promise<ModelResu
         apiKey: ml.apiKey,
         model: ml.model,
         prompt,
-        timeoutMs: 60000,
+        // The Meterless provider contract asks for a 180 s timeout (a cold
+        // model load can take minutes) and for meterless-app on every
+        // request plus meterless-scope: user on chat, so the runtime can
+        // keep this app's requests apart from other apps.
+        timeoutMs: 180000,
         providerLabel: "Meterless",
+        extraHeaders: {
+          "meterless-app": "thought-receipts",
+          "meterless-scope": "user",
+        },
       });
       return { ...r, provider: "meterless" };
     } catch (err) {
