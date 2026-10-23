@@ -323,14 +323,49 @@ export function isInScope(task: string): boolean {
  * Silence is not a statement: a caller re-pricing from an edited input
  * must not read it as the default below, or an edit that never mentions
  * volume would silently re-price at a volume the run never profiled.
+ *
+ * A relative word (double, twice, 2x, triple, three times, 3x, half)
+ * counts as a volume statement only when it stands on its own as a
+ * whole word and sits within 40 characters of a volume context word
+ * (volume, transfer, egress, data, tb), in either order. Substring
+ * matches inside other words never count, and hyphenated compounds
+ * such as double-check and triple-check never count either: ordinary
+ * idioms like "on behalf of", "halfway through", and "double-check
+ * every number" state no volume at all. Relative words are read
+ * against the standard 400 TB/yr base, so "double" always means
+ * 800 TB/yr regardless of the volume a run has profiled.
  */
 export function parseStatedVolumeTB(text: string): number | null {
   const t = text.toLowerCase();
   const explicit = /(\d+(?:\.\d+)?)\s*tb/.exec(t);
   if (explicit) return Math.min(10000, Math.max(1, parseFloat(explicit[1])));
-  if (/triple|3x|three times/.test(t)) return 1200;
-  if (/double|2x|twice/.test(t)) return 800;
-  if (/half/.test(t)) return 200;
+
+  // Spans of the volume context words in the text.
+  const contextSpans: Array<{ start: number; end: number }> = [];
+  const contextRe = /(?<![a-z0-9-])(?:volume|transfer|egress|data|tb)(?![a-z0-9-])/g;
+  for (let m = contextRe.exec(t); m !== null; m = contextRe.exec(t)) {
+    contextSpans.push({ start: m.index, end: m.index + m[0].length });
+  }
+  if (contextSpans.length === 0) return null;
+
+  // A multiplier counts only when a context word is within 40
+  // characters of it (gap between the two spans, either order).
+  const nearContext = (start: number, end: number): boolean =>
+    contextSpans.some((c) => {
+      const gap = start >= c.end ? start - c.end : c.start >= end ? c.start - end : 0;
+      return gap <= 40;
+    });
+
+  const relativeGroups: Array<{ re: RegExp; value: number }> = [
+    { re: /(?<![a-z0-9-])(?:triple|three\s+times|3x)(?![a-z0-9-])/g, value: 1200 },
+    { re: /(?<![a-z0-9-])(?:double|twice|2x)(?![a-z0-9-])/g, value: 800 },
+    { re: /(?<![a-z0-9-])half(?![a-z0-9-])/g, value: 200 },
+  ];
+  for (const group of relativeGroups) {
+    for (let m = group.re.exec(t); m !== null; m = group.re.exec(t)) {
+      if (nearContext(m.index, m.index + m[0].length)) return group.value;
+    }
+  }
   return null;
 }
 
