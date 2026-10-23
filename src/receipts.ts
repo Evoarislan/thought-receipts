@@ -40,13 +40,14 @@ export interface Receipt {
   /** Retry count for this step: 0 for a first attempt, incremented on retries. */
   retryCount: number;
   /**
-   * Data provenance, present only on receipts whose step fetched data:
-   * the SQL the step ran against the data layer. The same SQL text is
-   * recorded when the bundled CSV fallback served the fetch, because it
-   * is the query the fetch stands for in both modes. Absent on non-data
-   * receipts.
+   * Data provenance, present only on receipts whose step fetched or
+   * checked data: the SQL the step ran against the data layer. The same
+   * SQL text is recorded when the bundled CSV fallback served the fetch,
+   * because it is the query the fetch stands for in both modes. Null on
+   * the integrity receipt, whose rows are a working copy that no query
+   * returned. Absent on non-data receipts.
    */
-  query?: string;
+  query?: string | null;
   /**
    * Data provenance: the rows the step's fetch actually used, one record
    * per vendor, keyed by source column name. Recorded so a later replay
@@ -54,8 +55,8 @@ export interface Receipt {
    * the step saw.
    */
   rows?: Array<Record<string, string | number | null>>;
-  /** Data provenance: which path served the fetch, live Zetaris SQL or the bundled CSV fallback. */
-  dataSource?: "zetaris" | "csv-fallback";
+  /** Data provenance: which path served the rows, live Zetaris SQL, the bundled CSV fallback, or the run's working catalog. */
+  dataSource?: "zetaris" | "csv-fallback" | "working-catalog";
   /**
    * Dual-language receipts: a plain-English rendering of the step's query
    * and the rows it returned, generated from the query intent and the

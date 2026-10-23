@@ -386,7 +386,11 @@ export async function fetchCatalog(): Promise<SourceFetch> {
 
 /** Fetch the support and SLA terms (the terms-check step's data). */
 export async function fetchTerms(): Promise<SourceFetch> {
-  return fetchWithFallback(TERMS_SQL, () => loadSource("terms"));
+  // TERMS_SQL orders by vendor; the local path returns the same order so
+  // both paths hand the pipeline the same fetch result.
+  return fetchWithFallback(TERMS_SQL, () =>
+    [...loadSource("terms")].sort((a, b) => a.vendor.localeCompare(b.vendor))
+  );
 }
 
 // --- Vendor records -------------------------------------------------------------

@@ -22,10 +22,14 @@
 import { payForStep, AGENT_WALLETS, USER_WALLET, PRICE_PER_STEP_USDC, MOCK_MODE } from "./x402.js";
 import { chainReceipts, type Receipt, type ReceiptStatus } from "./receipts.js";
 import {
+  CATALOG_SQL,
+  TERMS_SQL,
+  extractRows,
   fetchCatalog,
   fetchTerms,
   buildVendorRecords,
   loadSource,
+  normalizeRows,
   runSql,
   type SourceFetch,
 } from "./zetaris.js";
@@ -518,8 +522,10 @@ function integrityDisclosure(events: IntegrityEvent[]): string {
 export interface FlipInfo {
   /** Egress volume (TB/yr) at which the winner changes, bisected. */
   thresholdTB: number;
-  /** Vendor that wins just past the threshold. */
+  /** Vendor that wins just past the threshold, in the stated direction. */
   newWinner: string;
+  /** Direction from the run's volume in which this crossing sits. */
+  direction: "above" | "below";
 }
 
 /** Cheapest vendor name at a given egress volume, from real records. */
@@ -533,33 +539,83 @@ function winnerAt(catalog: Vendor[], volumeTB: number, termYears: number): strin
 }
 
 /**
- * Find the first egress volume above `fromTB` (up to 5000 TB/yr) where
- * `accept(winner)` becomes true, then bisect the crossing for precision.
- * Returns the threshold and the winner just past it, or null when the
- * predicate never fires in range. Computed from the actual records via
+ * Find the nearest egress volume in one direction from `fromTB` (the
+ * tested range is 0 to 5000 TB/yr) where `accept(winner)` becomes true,
+ * then bisect the crossing for precision. Returns the threshold and the
+ * winner just past it in that direction, or null when the predicate
+ * never fires in that direction. Computed from the actual records via
  * computeTCO; nothing is hardcoded.
  */
 function findFlipVolume(
   catalog: Vendor[],
   termYears: number,
   fromTB: number,
-  accept: (winnerName: string) => boolean
+  accept: (winnerName: string) => boolean,
+  direction: "above" | "below" = "above"
 ): FlipInfo | null {
+  if (direction === "above") {
+    let prev = fromTB;
+    for (let v = Math.floor(fromTB) + 1; v <= 5000; v++) {
+      if (accept(winnerAt(catalog, v, termYears))) {
+        let lo = prev;
+        let hi = v;
+        for (let i = 0; i < 40; i++) {
+          const mid = (lo + hi) / 2;
+          if (accept(winnerAt(catalog, mid, termYears))) hi = mid;
+          else lo = mid;
+        }
+        return { thresholdTB: hi, newWinner: winnerAt(catalog, hi, termYears), direction };
+      }
+      prev = v;
+    }
+    return null;
+  }
+
   let prev = fromTB;
-  for (let v = Math.floor(fromTB) + 1; v <= 5000; v++) {
+  for (let v = Math.ceil(fromTB) - 1; v >= 0; v--) {
     if (accept(winnerAt(catalog, v, termYears))) {
-      let lo = prev;
-      let hi = v;
+      // lo is on the accepting side of the crossing and hi is on the
+      // run's side. Bisect toward the boundary, then report the boundary
+      // from the run's side so "below roughly N" names the crossing.
+      let lo = v;
+      let hi = prev;
       for (let i = 0; i < 40; i++) {
         const mid = (lo + hi) / 2;
-        if (accept(winnerAt(catalog, mid, termYears))) hi = mid;
-        else lo = mid;
+        if (accept(winnerAt(catalog, mid, termYears))) lo = mid;
+        else hi = mid;
       }
-      return { thresholdTB: hi, newWinner: winnerAt(catalog, hi, termYears) };
+      return { thresholdTB: hi, newWinner: winnerAt(catalog, lo, termYears), direction };
     }
     prev = v;
   }
   return null;
+}
+
+/** Compose the run's flip note from its nearest crossings in both directions. */
+function flipNoteText(
+  volumeTB: number,
+  winnerName: string,
+  above: FlipInfo | null,
+  below: FlipInfo | null
+): string {
+  const clauses: string[] = [];
+  if (above) {
+    clauses.push(
+      `above roughly ${Math.round(above.thresholdTB)} TB/yr of egress, ${above.newWinner} becomes the cheapest vendor`
+    );
+  }
+  if (below) {
+    clauses.push(
+      `below roughly ${Math.round(below.thresholdTB)} TB/yr of egress, ${below.newWinner} becomes the cheapest vendor`
+    );
+  }
+  if (clauses.length === 0) {
+    return (
+      `What would change this answer: no egress volume from 0 to 5,000 TB/yr changes the winner; ` +
+      `${winnerName} stays cheapest across the whole range tested.`
+    );
+  }
+  return `What would change this answer: ${clauses.join("; ")} (this run priced ${volumeTB} TB/yr).`;
 }
 
 // --- Data-step row recording (dual-language receipts + replay) ----------------
@@ -573,24 +629,36 @@ interface DataStepSpec {
   ask: string;
 }
 
+const CATALOG_COLUMNS = [
+  "vendor",
+  "compute_annual_usd",
+  "egress_per_gb_usd",
+  "allowance_tb",
+  "overage_per_gb_usd",
+  "support_tier",
+  "support_annual_usd",
+  "sla_percent",
+];
+
+const TERMS_COLUMNS = ["vendor", "support_tier", "support_annual_usd", "sla_percent"];
+
 const DATA_STEP_SPECS: Record<string, DataStepSpec> = {
   "gather-quotes": {
-    columns: ["vendor", "compute_annual_usd"],
-    query: "SELECT vendor, compute_annual_usd FROM quotes",
-    ask: "each vendor's headline compute quote",
+    columns: CATALOG_COLUMNS,
+    query: CATALOG_SQL,
+    ask:
+      "the joined vendor catalog: each vendor's headline compute quote, egress rate, " +
+      "egress allowance, overage rate, support package, and SLA, joined on vendor across " +
+      "the quotes, egress_rates, and terms sources",
   },
   "check-terms": {
-    columns: ["vendor", "egress_per_gb_usd", "allowance_tb", "overage_per_gb_usd", "support_tier", "support_annual_usd", "sla_percent"],
-    query:
-      "SELECT e.vendor, e.egress_per_gb_usd, e.allowance_tb, e.overage_per_gb_usd, t.support_tier, t.support_annual_usd, t.sla_percent " +
-      "FROM egress_rates e JOIN terms t ON t.vendor = e.vendor",
-    ask: "each vendor's egress rates, support package, and SLA",
+    columns: TERMS_COLUMNS,
+    query: TERMS_SQL,
+    ask: "each vendor's support package, support price, and SLA from the terms source",
   },
   "compute-tco": {
-    columns: ["vendor", "compute_annual_usd", "egress_per_gb_usd", "allowance_tb", "overage_per_gb_usd", "support_tier", "support_annual_usd", "sla_percent"],
-    query:
-      "SELECT q.vendor, q.compute_annual_usd, e.egress_per_gb_usd, e.allowance_tb, e.overage_per_gb_usd, t.support_tier, t.support_annual_usd, t.sla_percent " +
-      "FROM quotes q JOIN egress_rates e ON e.vendor = q.vendor JOIN terms t ON t.vendor = q.vendor",
+    columns: CATALOG_COLUMNS,
+    query: CATALOG_SQL,
     ask: "the joined vendor record the pricing math runs on",
   },
 };
@@ -599,6 +667,18 @@ function projectRows(records: DataRow[], columns: string[]): DataRow[] {
   return records.map((r) => {
     const out: DataRow = {};
     for (const c of columns) out[c] = r[c] ?? null;
+    return out;
+  });
+}
+
+/** Project rows to the given columns, normalized to string values. */
+function projectStringRows(rows: readonly Record<string, unknown>[], columns: string[]): DataRow[] {
+  return rows.map((row) => {
+    const out: DataRow = {};
+    for (const c of columns) {
+      const value = row[c];
+      out[c] = value === null || value === undefined ? "" : String(value);
+    }
     return out;
   });
 }
@@ -618,9 +698,9 @@ function plainEnglishFor(spec: DataStepSpec, rows: DataRow[]): string {
 }
 
 interface ReceiptDataFields {
-  query: string;
+  query: string | null;
   rows: DataRow[];
-  dataSource: "zetaris" | "csv-fallback";
+  dataSource: "zetaris" | "csv-fallback" | "working-catalog";
   plainEnglish: string;
 }
 
@@ -629,35 +709,27 @@ interface ReceiptDataFields {
  * (the data layer's SourceFetch: the query it ran, the rows it returned,
  * and which path served them) plus a plain-English rendering of the ask.
  *
- * For gather-quotes the recorded rows are the fetch's rows: the working
- * catalog is built from them, so they are what the step read. For
- * check-terms the recorded rows are the working catalog's term fields at
- * execution time, because those are the values the step's narrative
- * actually reads; on an undisturbed run they are identical to the
- * fetch's rows. Recording the read values is what lets a later replay
- * prove an integrity catch: replay re-derives the rows from the sources
- * and diffs them against this recording.
+ * Each data receipt records its own fetch's rows, projected to that
+ * fetch's query columns and normalized to string values. The catalog
+ * receipt records the joined catalog fetch; the terms receipt records
+ * the terms fetch, not a projection of the working catalog. The two
+ * fetches can therefore disagree on a divergent source, and each
+ * receipt says what its own fetch actually returned. The sabotage
+ * catch is proven by the separate integrity receipt, which records the
+ * corrupted working copy itself.
  *
- * Returns undefined for steps that read no source data.
+ * Returns undefined for steps that made no fetch.
  */
-function dataFieldsFor(step: string, ctx: Ctx, fetch?: SourceFetch): ReceiptDataFields | undefined {
+function dataFieldsFor(step: string, _ctx: Ctx, fetch?: SourceFetch): ReceiptDataFields | undefined {
   const spec = DATA_STEP_SPECS[step];
   if (!spec || step === "compute-tco") return undefined;
-  if (step === "gather-quotes") {
-    if (!fetch) return undefined;
-    const rows = fetch.rows as DataRow[];
-    return {
-      query: fetch.query,
-      rows,
-      dataSource: fetch.dataSource,
-      plainEnglish: plainEnglishFor(spec, rows),
-    };
-  }
-  const rows = projectRows(catalogRecords(ctx.vendors), spec.columns);
+  if (step !== "gather-quotes" && step !== "check-terms") return undefined;
+  if (!fetch) return undefined;
+  const rows = projectStringRows(fetch.rows, spec.columns);
   return {
-    query: fetch?.query ?? spec.query,
+    query: fetch.query,
     rows,
-    dataSource: fetch?.dataSource ?? "csv-fallback",
+    dataSource: fetch.dataSource,
     plainEnglish: plainEnglishFor(spec, rows),
   };
 }
@@ -813,26 +885,55 @@ const STEP_DEFS: StepDef[] = [
     buildInput: (ctx) => `contract terms for ${ctx.vendors.map((v) => v.name).join(", ")} at ${ctx.volumeTB}TB/yr`,
     execute: async (ctx, _input) => {
       // The terms fetch, recorded on this step's receipt the same way
-      // the catalog fetch is recorded on step 2's. The narrative below is
-      // built from the catalog step 2 loaded; the values are the same
-      // sources, so the two cannot disagree.
+      // the catalog fetch is recorded on step 2's. The names, support
+      // tiers, support prices, and SLAs in the narrative come from this
+      // fetch's own rows; egress context comes from the catalog records
+      // actually present. A different vendor set changes the narrative
+      // instead of throwing.
       const terms = await fetchTerms();
-      const byName = (name: string): Vendor => {
-        const found = ctx.vendors.find((v) => v.name === name);
-        if (!found) throw new Error(`Vendor "${name}" missing from the loaded catalog`);
-        return found;
-      };
-      const nimbus = byName("Nimbus Cloud");
-      const stratus = byName("Stratus Systems");
-      const cirrus = byName("Cirrus Compute");
-      ctx.termsNote =
-        `Nimbus Cloud: SLA ${nimbus.sla}, ${nimbus.supportTier}. Egress is uncapped and metered at the highest rate (${fmt(nimbus.egressPerGB)}/GB): ` +
-        `at ${ctx.volumeTB}TB/yr egress alone costs ${fmt(Math.round(ctx.volumeTB * 1000 * nimbus.egressPerGB))}/yr, rivaling the compute. Annual commit with auto-renew.\n` +
-        `Stratus Systems: SLA ${stratus.sla}, ${stratus.supportTier}. Egress is billed at ${fmt(stratus.egressPerGB)}/GB for the first ${stratus.egressCapTB}TB/yr, ` +
-        `then ${fmt(stratus.egressOveragePerGB)}/GB overage. ${stratus.egressCapTB !== null && ctx.volumeTB <= stratus.egressCapTB ? `At ${ctx.volumeTB}TB/yr the workload sits inside the cap with room to grow.` : `At ${ctx.volumeTB}TB/yr the workload EXCEEDS the ${stratus.egressCapTB}TB cap; overage fees apply and erase the rate advantage.`}\n` +
-        `Cirrus Compute: SLA ${cirrus.sla}, ${cirrus.supportTier}. Egress ${fmt(cirrus.egressPerGB)}/GB with no cap: predictable at any scale, weakest support tier. Fine for a team with in-house ops.`;
+      const termsByVendor = new Map(terms.rows.map((row) => [row.vendor, row]));
+      const catalogByVendor = new Map(ctx.vendors.map((v) => [v.name, v]));
+      const names = [
+        ...new Set([...terms.rows.map((row) => row.vendor), ...ctx.vendors.map((v) => v.name)]),
+      ];
+      const lines = names.map((name) => {
+        const term = termsByVendor.get(name);
+        const vendor = catalogByVendor.get(name);
+        const termsText = term
+          ? `SLA ${term.sla_percent}%, ${term.support_tier}, support ${fmt(Number(term.support_annual_usd))}/yr`
+          : "no terms row was returned for this vendor";
+        let egressText = "Egress terms were not part of this terms fetch.";
+        if (vendor) {
+          if (vendor.egressCapTB !== null) {
+            egressText =
+              `Egress is billed at ${fmt(vendor.egressPerGB)}/GB for the first ${vendor.egressCapTB}TB/yr, ` +
+              `then ${fmt(vendor.egressOveragePerGB)}/GB overage. ` +
+              (ctx.volumeTB <= vendor.egressCapTB
+                ? `At ${ctx.volumeTB}TB/yr the workload sits inside the threshold with room to grow.`
+                : `At ${ctx.volumeTB}TB/yr the workload EXCEEDS the ${vendor.egressCapTB}TB threshold; overage fees apply.`);
+          } else {
+            egressText =
+              `Egress has no cap and is metered at ${fmt(vendor.egressPerGB)}/GB: ` +
+              `at ${ctx.volumeTB}TB/yr egress alone costs ${fmt(Math.round(ctx.volumeTB * 1000 * vendor.egressPerGB))}/yr.`;
+          }
+        }
+        return `${name}: ${termsText}. ${egressText}`;
+      });
+      ctx.termsNote = lines.join("\n");
+      const highestRate =
+        ctx.vendors.length > 0
+          ? ctx.vendors.reduce((a, b) => (b.egressPerGB > a.egressPerGB ? b : a))
+          : null;
+      const capped = ctx.vendors.filter((v) => v.egressCapTB !== null);
       return {
-        outputSummary: `Terms checked. Flag: Nimbus egress is uncapped at the highest metered rate; Stratus pricing hinges on the ${stratus.egressCapTB}TB cap.`,
+        outputSummary:
+          `Terms checked for ${names.join(", ")}. Flag: ` +
+          (highestRate
+            ? `${highestRate.name} has the highest metered egress rate at ${fmt(highestRate.egressPerGB)}/GB`
+            : "no egress records were returned") +
+          (capped.length > 0
+            ? `; ${capped.map((v) => `${v.name} pricing hinges on its ${v.egressCapTB}TB/yr threshold`).join("; ")}.`
+            : "; no returned vendor record has an egress threshold."),
         detail: `Contract terms and risk flags:\n${ctx.termsNote}`,
         data: terms,
       };
@@ -852,13 +953,26 @@ const STEP_DEFS: StepDef[] = [
       rows.sort((a, b) => a.tco - b.tco);
       ctx.tcoRows = rows;
       ctx.winner = rows[0];
-      // "What would change your mind": the egress volume where the winner
-      // flips, computed from the actual records via computeTCO.
+      // "What would change your mind": the nearest egress volumes in
+      // both directions where the winner flips, computed from the
+      // actual records via computeTCO over 0 to 5,000 TB/yr.
       const winnerName = rows[0].vendor.name;
-      ctx.flip = findFlipVolume(ctx.vendors, ctx.profile.termYears, ctx.volumeTB, (name) => name !== winnerName);
-      ctx.flipNote = ctx.flip
-        ? `What would change this answer: above roughly ${Math.round(ctx.flip.thresholdTB)} TB/yr of egress, ${ctx.flip.newWinner} becomes the cheapest vendor (this run priced ${ctx.volumeTB} TB/yr).`
-        : `What would change this answer: no egress volume up to 5,000 TB/yr changes the winner; ${winnerName} stays cheapest across the whole range tested.`;
+      const flipAbove = findFlipVolume(
+        ctx.vendors,
+        ctx.profile.termYears,
+        ctx.volumeTB,
+        (name) => name !== winnerName,
+        "above"
+      );
+      const flipBelow = findFlipVolume(
+        ctx.vendors,
+        ctx.profile.termYears,
+        ctx.volumeTB,
+        (name) => name !== winnerName,
+        "below"
+      );
+      ctx.flip = flipAbove ?? flipBelow;
+      ctx.flipNote = flipNoteText(ctx.volumeTB, winnerName, flipAbove, flipBelow);
       const order = rows.map((r) => `${r.vendor.name} ${fmtK(r.tco)}`).join(", ");
       const cheapestHeadline = rows.reduce((a, b) => (b.vendor.headlineAnnual < a.vendor.headlineAnnual ? b : a));
       const runnerUp = rows[1];
@@ -1136,7 +1250,11 @@ export async function runPipeline(
           ? "evaluator"
           : null;
     receipts.push({
-      seq: args.def.seq,
+      // Sequence numbers are chain positions, assigned at emission.
+      // A free receipt inserted mid-chain (the integrity catch) takes
+      // the next position and every later receipt numbers after it, so
+      // seq always matches the receipt's place in the chain.
+      seq: receipts.length + 1,
       agent: args.def.agent,
       step: args.def.step,
       title: args.def.buildTitle ? args.def.buildTitle(ctx) : args.def.title,
@@ -1213,11 +1331,6 @@ export async function runPipeline(
     return { answer, receipts, flipNote: null };
   }
 
-  // Sequence numbers for free system receipts (integrity check,
-  // evaluator, dissent), assigned in the order they are emitted. In a
-  // plain run the evaluator keeps its historical seq of STEP_COUNT + 1.
-  let nextSyntheticSeq = STEP_COUNT + 1;
-
   // Integrity check: compare the working catalog against a fresh,
   // independent load of the registered CSV sources. The check reads only
   // the two datasets. On any disagreement it quarantines the field
@@ -1237,6 +1350,14 @@ export async function runPipeline(
     }
     const diffs = diffRecords(catalogRecords(ctx.vendors), sourceRecords);
     if (diffs.length === 0) return;
+    // Capture the corrupted working rows before quarantine restores
+    // them. These rows are the integrity receipt's evidence: they are a
+    // working copy, labeled as such, with no query behind them.
+    const caughtVendors = new Set(diffs.map((d) => d.vendor));
+    const caughtRows = projectStringRows(
+      catalogRecords(ctx.vendors).filter((row) => caughtVendors.has(String(row.vendor))),
+      CATALOG_COLUMNS
+    );
     const events: IntegrityEvent[] = diffs.map((d) => ({
       vendor: d.vendor,
       field: d.field,
@@ -1252,7 +1373,7 @@ export async function runPipeline(
     }
     ctx.integrityEvents = events;
     const integrityDef: StepDef = {
-      seq: nextSyntheticSeq++,
+      seq: 0,
       agent: "evaluator",
       step: "integrity-check",
       title: "Data integrity check",
@@ -1279,6 +1400,14 @@ export async function runPipeline(
       status: "ok",
       note: "integrity catch: no charge",
       targetAgent: "compute",
+      data: {
+        query: null,
+        rows: caughtRows,
+        dataSource: "working-catalog",
+        plainEnglish:
+          "In plain English: these are rows from the run's working copy at the moment the integrity check caught it. " +
+          "No query returned them; they are recorded so replay can compare this working copy against a fresh load of the registered sources.",
+      },
     });
   };
 
@@ -1395,7 +1524,7 @@ export async function runPipeline(
   }
 
   const evalDef: StepDef = {
-    seq: nextSyntheticSeq++,
+    seq: 0,
     agent: "evaluator",
     step: "evaluate",
     title: "Evaluator verification",
@@ -1442,23 +1571,42 @@ export async function runPipeline(
     const runnerUp = ctx.tcoRows[1];
     const ru = runnerUp.vendor;
     const margin = runnerUp.tco - winner.tco;
-    const ruFlip = findFlipVolume(ctx.vendors, ctx.profile.termYears, ctx.volumeTB, (name) => name === ru.name);
+    const ruFlipAbove = findFlipVolume(
+      ctx.vendors,
+      ctx.profile.termYears,
+      ctx.volumeTB,
+      (name) => name === ru.name,
+      "above"
+    );
+    const ruFlipBelow = findFlipVolume(
+      ctx.vendors,
+      ctx.profile.termYears,
+      ctx.volumeTB,
+      (name) => name === ru.name,
+      "below"
+    );
     const slaRank =
       [...ctx.vendors].sort((a, b) => parseFloat(b.sla) - parseFloat(a.sla)).findIndex((v) => v.name === ru.name) + 1;
     const cheapestSupport = Math.min(...ctx.vendors.map((v) => v.supportAnnual));
     const dissentLines: string[] = [
       `The case for ${ru.name}, the runner-up at ${fmtK(runnerUp.tco)} (${fmtK(margin)} behind ${winner.vendor.name} over ${ctx.profile.termYears} years at ${ctx.volumeTB}TB/yr).`,
     ];
-    if (ruFlip) {
+    if (ruFlipAbove) {
       dissentLines.push(
-        `Volume is its path to winning: past roughly ${Math.round(ruFlip.thresholdTB)}TB/yr of egress, ${ru.name} has the lowest total cost of the field.` +
+        `Volume is its path to winning: past roughly ${Math.round(ruFlipAbove.thresholdTB)}TB/yr of egress, ${ru.name} has the lowest total cost of the field.` +
           (ru.egressCapTB === null && winner.vendor.egressCapTB !== null
             ? ` Its egress rate of ${fmt(ru.egressPerGB)}/GB has no cap, while ${winner.vendor.name} bills ${fmt(winner.vendor.egressOveragePerGB)}/GB in overage past ${winner.vendor.egressCapTB}TB/yr.`
             : ` The ranking reverses there on the records as priced.`)
       );
-    } else {
+    }
+    if (ruFlipBelow) {
       dissentLines.push(
-        `On volume alone it never catches up: at every egress volume up to 5,000TB/yr, some other vendor prices lower. Its case rests on terms, not on scale.`
+        `Volume is also its path back: below roughly ${Math.round(ruFlipBelow.thresholdTB)}TB/yr of egress, ${ru.name} has the lowest total cost of the field. The ranking reverses there on the records as priced.`
+      );
+    }
+    if (!ruFlipAbove && !ruFlipBelow) {
+      dissentLines.push(
+        `On volume alone it never catches up: at every egress volume from 0 to 5,000TB/yr, some other vendor prices lower. Its case rests on terms, not on scale.`
       );
     }
     dissentLines.push(
@@ -1472,7 +1620,7 @@ export async function runPipeline(
         ` Its stated edge: ${ru.differentiator}.`
     );
     const dissentDef: StepDef = {
-      seq: nextSyntheticSeq++,
+      seq: 0,
       agent: "evaluator",
       step: "dissent",
       title: `Dissent: the case for ${ru.name}`,
@@ -1484,9 +1632,13 @@ export async function runPipeline(
       input: dissentDef.buildInput(ctx, clean),
       outputSummary:
         `Dissent recorded for the record: the strongest case for ${ru.name} (runner-up). ` +
-        (ruFlip
-          ? `It wins outright above roughly ${Math.round(ruFlip.thresholdTB)}TB/yr of egress. `
-          : `It does not win at any volume up to 5,000TB/yr. `) +
+        (ruFlipAbove
+          ? `It wins outright above roughly ${Math.round(ruFlipAbove.thresholdTB)}TB/yr of egress. `
+          : "") +
+        (ruFlipBelow
+          ? `It wins outright below roughly ${Math.round(ruFlipBelow.thresholdTB)}TB/yr of egress. `
+          : "") +
+        (!ruFlipAbove && !ruFlipBelow ? `It does not win at any volume from 0 to 5,000TB/yr. ` : "") +
         `The recommendation above stands; this receipt exists so the chain shows the alternative was argued from the same data.`,
       detail:
         `Evaluator dissent, recorded after a PASS verdict. The recommendation stands; this is the strongest case the same records make for the runner-up.\n\n` +
@@ -1527,9 +1679,9 @@ export async function runPipeline(
 // receipt came from a live Zetaris read, a re-execution of its recorded
 // query). MATCH means the receipt's data still agrees with the sources.
 // A DIFF lists every field that moved, which is what makes an integrity
-// catch provable after the fact: replaying the terms receipt from a
-// sabotage run shows the corrupted value the step recorded against the
-// clean value the source holds.
+// catch provable after the fact: replaying the integrity receipt from a
+// sabotage run compares its recorded working-copy rows against a fresh
+// load of the registered sources and reproduces the discrepancy.
 
 export interface ReplayResult {
   seq: number;
@@ -1540,7 +1692,7 @@ export interface ReplayResult {
   /** Field-level differences, present when result is "DIFF". */
   diffs?: RowDiff[];
   /** How the reference rows were obtained. */
-  via?: "zetaris" | "csv-sources";
+  via?: "zetaris" | "csv-sources" | "working-copy-vs-sources";
   /** Why the receipt cannot be replayed, when replayable is false. */
   reason?: string;
 }
@@ -1555,28 +1707,36 @@ export async function replayReceipt(receipts: Receipt[], seq: number): Promise<R
       seq,
       step: receipt.step,
       replayable: false,
-      reason: `Receipt #${seq} ("${receipt.title}") recorded no data rows, so there is nothing to replay against the sources. Only data receipts (vendor quotes, contract terms) carry replayable rows.`,
+      reason: `Receipt #${seq} ("${receipt.title}") recorded no data rows, so there is nothing to replay against the sources. Only data receipts (vendor quotes, contract terms, and the integrity check) carry replayable rows.`,
     };
   }
   const recorded = receipt.rows as DataRow[];
 
-  // Reference rows: re-execute the recorded query when the receipt came
-  // from a live Zetaris read and one is configured; otherwise (and on any
-  // failure of the live path) re-derive the rows from the CSV sources.
+  // Reference rows: an integrity receipt's working-copy rows are always
+  // compared against a fresh load of the registered sources. A live
+  // Zetaris receipt re-executes its recorded query through the data
+  // layer's own response parser; otherwise (and on any failure of the
+  // live path) the rows are re-derived from the CSV sources.
   // SAMPLE_MODE never attempts the network call.
   let replayed: DataRow[] | null = null;
-  let via: "zetaris" | "csv-sources" = "csv-sources";
-  if (receipt.dataSource === "zetaris" && receipt.query && !SAMPLE_MODE) {
+  let via: "zetaris" | "csv-sources" | "working-copy-vs-sources" = "csv-sources";
+  if (receipt.dataSource === "working-catalog") {
     try {
-      const raw = await runSql(receipt.query);
-      if (Array.isArray(raw)) {
-        replayed = (raw as Record<string, unknown>[]).map((row) => {
-          const out: DataRow = {};
-          for (const [k, v] of Object.entries(row)) {
-            out[k] = typeof v === "string" || typeof v === "number" || v === null ? v : String(v);
-          }
-          return out;
-        });
+      replayed = csvRecords();
+      via = "working-copy-vs-sources";
+    } catch {
+      return {
+        seq,
+        step: receipt.step,
+        replayable: false,
+        reason: "The registered CSV sources could not be read in this environment, so the replay has no reference rows.",
+      };
+    }
+  } else if (receipt.dataSource === "zetaris" && receipt.query && !SAMPLE_MODE) {
+    try {
+      const rows = normalizeRows(extractRows(await runSql(receipt.query)));
+      if (rows.length > 0) {
+        replayed = rows;
         via = "zetaris";
       }
     } catch {
@@ -1596,9 +1756,15 @@ export async function replayReceipt(receipts: Receipt[], seq: number): Promise<R
     }
   }
 
-  // Compare on exactly the fields the receipt recorded.
+  // Compare on exactly the fields the receipt recorded. An integrity
+  // receipt records only the rows it caught, so its reference read is
+  // limited to those vendors: unrecorded vendors are not a discrepancy.
   const columns = Object.keys(recorded[0]);
-  const diffs = diffRecords(recorded, projectRows(replayed, columns));
+  const reference =
+    receipt.dataSource === "working-catalog"
+      ? replayed.filter((r) => recorded.some((rec) => String(rec.vendor) === String(r.vendor)))
+      : replayed;
+  const diffs = diffRecords(recorded, projectRows(reference, columns));
   return {
     seq,
     step: receipt.step,

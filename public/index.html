@@ -154,7 +154,7 @@
     <p class="hint" id="replayNote" hidden style="margin:0 0 10px">Run complete. Replaying the receipt chain.</p>
     <div id="feed"></div>
     <div id="tamperOut"></div>
-    <p class="hint" style="margin-top:12px">Click any paid receipt to challenge that step: edit its input and re-run everything downstream. The evaluator receipt (last, blue) is the verification step and cannot be challenged. "Simulate tampering" alters a client-side copy only, to show what verification reports when a receipt is edited.</p>
+    <p class="hint" style="margin-top:12px">Click any paid receipt to challenge that step: edit its input and re-run everything downstream. Evaluator receipts (blue) are verification steps and cannot be challenged. "Simulate tampering" alters a client-side copy only, to show what verification reports when a receipt is edited.</p>
   </section>
 
   <section class="card" id="billWrap" hidden>
@@ -290,10 +290,14 @@ function receiptCard(r, idx) {
 // Dual-language block for data receipts: the SQL the step ran, the same
 // query in plain English, and a Replay button that re-derives the rows
 // from the registered sources and diffs them against the recorded rows.
+// The integrity receipt is the exception: its rows are a working copy,
+// labeled as such, and no SQL is shown for it because no query ran.
 function dataBlockHtml(r) {
   if (!r.query && !r.plainEnglish && !Array.isArray(r.rows)) return "";
   let h = `<div class="rdata">`;
-  if (r.query) h += `<div class="sql">SQL · ${escapeHtml(r.query)}</div>`;
+  if (r.dataSource === "working-catalog") {
+    h += `<div class="sql">WORKING COPY · recorded by the integrity check; no query returned these rows</div>`;
+  } else if (r.query) h += `<div class="sql">SQL · ${escapeHtml(r.query)}</div>`;
   if (r.plainEnglish) h += `<div class="plain">${escapeHtml(r.plainEnglish)}</div>`;
   if (Array.isArray(r.rows)) {
     h += `<div style="margin-top:8px"><button class="ghost small replayBtn">Replay against sources</button></div>` +
@@ -323,12 +327,16 @@ async function replayReceipt(r, out, btn) {
       out.textContent = "Replay unavailable: " + (data.reason || "this receipt recorded no data rows.");
     } else if (data.result === "MATCH") {
       out.className = "replayOut match";
-      out.textContent = `Replay: MATCH. A fresh read of the registered sources returns exactly the rows this receipt recorded${data.via === "zetaris" ? " (re-executed against Zetaris)" : ""}.`;
+      out.textContent = data.via === "working-copy-vs-sources"
+        ? "Replay: MATCH. The working-copy rows recorded here now agree with a fresh load of the registered sources."
+        : `Replay: MATCH. A fresh read of the registered sources returns exactly the rows this receipt recorded${data.via === "zetaris" ? " (re-executed against Zetaris)" : ""}.`;
     } else {
       out.className = "replayOut diff";
       const parts = (data.diffs || []).map((d) =>
         `${d.vendor}, ${d.field}: recorded ${fmtReplayVal(d.recorded)} vs source ${fmtReplayVal(d.replayed)}`);
-      out.textContent = `Replay: DIFF. The recorded rows disagree with a fresh read of the registered sources: ${parts.join("; ")}.`;
+      out.textContent = data.via === "working-copy-vs-sources"
+        ? `Replay: DIFF, and that is the proof. This receipt recorded working-copy rows, not a query result; a fresh load of the registered sources disagrees with them: ${parts.join("; ")}.`
+        : `Replay: DIFF. The recorded rows disagree with a fresh read of the registered sources: ${parts.join("; ")}.`;
     }
   } catch (e) {
     out.textContent = "Replay failed: " + e.message;
@@ -424,7 +432,7 @@ async function runNetwork() {
     }
     const integrity = data.receipts.find((r) => r.step === "integrity-check");
     if (integrity) {
-      notes.push("Integrity drill result: the checker caught a corrupted value in the working data, quarantined it, and restored the registered source value before pricing. See the integrity receipt in the chain, and replay the contract terms receipt to see the recorded value diff against the source.");
+      notes.push("Integrity drill result: the checker caught a corrupted value in the working data, quarantined it, and restored the registered source value before pricing. See the integrity receipt in the chain, and replay it to reproduce the working-copy value diff against the registered sources.");
     }
     renderRun(data, notes.length ? notes.join(" ") : null);
   } catch (e) {

@@ -68,15 +68,45 @@ function scoreReceipt(r: Receipt, kws: string[]): number {
   return score;
 }
 
-function templateAnswer(hits: { r: Receipt; s: number }[]): WhyAnswer {
+interface FlipFact {
+  text: string;
+  /** Sequence number of the compute receipt the fact is tied to. */
+  citation: number;
+}
+
+function templateAnswer(hits: { r: Receipt; s: number }[], fact?: FlipFact | null): WhyAnswer {
   const top = hits.slice(0, 3);
   const lines = top.map(
     ({ r }) => `Receipt #${r.seq} (${r.agent}, "${r.title}"): ${r.outputSummary}`
   );
-  const answer =
+  let answer =
     `From the receipt chain:\n${lines.join("\n")}\n` +
     `In short: ${top[0].r.outputSummary}`;
-  return { answer, citations: top.map(({ r }) => r.seq), mode: "template", provider: null, model: null };
+  const citations = top.map(({ r }) => r.seq);
+  if (fact) {
+    answer += `\n\nFlip fact from receipt #${fact.citation}: ${fact.text}`;
+    if (!citations.includes(fact.citation)) citations.push(fact.citation);
+  }
+  return { answer, citations, mode: "template", provider: null, model: null };
+}
+
+/** Recover the flip note from the finalize receipt when none was passed in. */
+function flipNoteFromReceipts(receipts: Receipt[]): string | null {
+  const finalize = receipts.find((r) => r.step === "finalize" && r.status !== "failed");
+  if (!finalize) return null;
+  const match = /(What would change this answer:[\s\S]*?)(?:\n\n|$)/.exec(finalize.detail);
+  return match ? match[1].trim() : null;
+}
+
+/** Whether the question is about the decision, so the flip fact belongs in the answer. */
+function flipFactRelevant(question: string, receipts: Receipt[]): boolean {
+  const q = question.toLowerCase();
+  if (
+    /(flip|threshold|volume|egress|winner|cheapest|change your mind|change this answer|pick|picked|choose|chose|choice|recommend|selected|select)/.test(q)
+  ) {
+    return true;
+  }
+  return vendorNamesIn(receipts).some((name) => question.includes(name));
 }
 
 // --- Draft verification ------------------------------------------------------
@@ -134,12 +164,26 @@ function draftIsGrounded(draft: string, cited: Receipt[], allReceipts: Receipt[]
  * Answer a "why" question about the latest run. Throws when there are no
  * receipts or the question is empty.
  */
-export async function answerWhy(receipts: Receipt[], question: string): Promise<WhyAnswer> {
+export async function answerWhy(
+  receipts: Receipt[],
+  question: string,
+  flipNote?: string | null
+): Promise<WhyAnswer> {
   const q = question.trim().slice(0, 500);
   if (!q) throw new Error("question is required");
   if (receipts.length === 0) {
     throw new Error("No receipts yet. Run the network first, then ask why.");
   }
+
+  // The run's flip note is a grounded fact of the run, tied to the
+  // compute receipt whose records it was derived from. It joins the
+  // answer when the question is about the decision, so a why answer
+  // states the flip in the correct direction for the run's volume.
+  const computeReceipt = receipts.find((r) => r.step === "compute-tco" && r.status !== "failed");
+  const flipText = (flipNote ?? "").trim() || flipNoteFromReceipts(receipts);
+  const fact: FlipFact | null =
+    flipText && computeReceipt ? { text: flipText, citation: computeReceipt.seq } : null;
+  const relevantFact = fact && flipFactRelevant(q, receipts) ? fact : null;
 
   const kws = keywords(q);
   const scored = receipts
@@ -148,6 +192,15 @@ export async function answerWhy(receipts: Receipt[], question: string): Promise<
     .sort((a, b) => b.s - a.s);
 
   if (scored.length === 0) {
+    if (relevantFact) {
+      return {
+        answer: `Flip fact from receipt #${relevantFact.citation}: ${relevantFact.text}`,
+        citations: [relevantFact.citation],
+        mode: "template",
+        provider: null,
+        model: null,
+      };
+    }
     return {
       answer: `I could not find anything in the receipt chain about "${q}". Try asking about a vendor, a TCO number, or a step the agents took.`,
       citations: [],
@@ -169,21 +222,31 @@ export async function answerWhy(receipts: Receipt[], question: string): Promise<
       draft = await reasonWithModelDetailed(
         `Receipts:\n${receipts
           .map((r) => `#${r.seq} [${r.agent}] ${r.title}: ${r.outputSummary}`)
-          .join("\n")}\n\nQuestion: ${q}\n\nAnswer in plain English, citing receipt numbers.`
+          .join("\n")}` +
+          (relevantFact
+            ? `\n\nGrounded flip fact from receipt #${relevantFact.citation}: ${relevantFact.text}`
+            : "") +
+          `\n\nQuestion: ${q}\n\nAnswer in plain English, citing receipt numbers.`
       );
     } catch {
       // No provider configured, or every provider failed: the template
       // answer stands.
     }
     if (draft && draftIsGrounded(draft.text, cited, receipts)) {
+      let answer = draft.text;
+      const citations = cited.map((r) => r.seq);
+      if (relevantFact && !answer.includes(relevantFact.text)) {
+        answer += `\n\nFlip fact from receipt #${relevantFact.citation}: ${relevantFact.text}`;
+        if (!citations.includes(relevantFact.citation)) citations.push(relevantFact.citation);
+      }
       return {
-        answer: draft.text,
-        citations: cited.map((r) => r.seq),
+        answer,
+        citations,
         mode: "model",
         provider: draft.provider,
         model: draft.model,
       };
     }
   }
-  return templateAnswer(scored);
+  return templateAnswer(scored, relevantFact);
 }

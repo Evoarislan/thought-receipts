@@ -4,9 +4,9 @@ The pay-per-thought agent network. Open Agent Hackathon 2026, Track 2: **The Age
 
 ## The idea
 
-A coordinator agent breaks your task into subtasks. Three specialist agents (research, compute, synthesize) execute each subtask behind a **$0.01 x402 paywall**. Every payment, every input, and every output is logged as a receipt. Then a fourth role, the **evaluator**, checks the finished recommendation against the receipts before the answer stands.
+A coordinator agent breaks your task into subtasks. Three specialist agents (research, compute, synthesize) execute each subtask behind a **$0.01 x402 paywall**. Every payment, every input, and every output is logged as a receipt. Then a fourth role, the **evaluator**, checks the finished recommendation against the receipts before the answer stands, and after a pass it records a free **dissent** receipt with the strongest case for the runner-up.
 
-The system is honestly a coordinator plus specialists plus an evaluator, not a free-form swarm: the specialists run in a planned order, and the evaluator is the second interaction, a verification pass over their work. The evaluator recomputes the winner from the TCO table recorded in the compute receipt, confirms every dollar figure in the recommendation appears in an earlier receipt, and, when a model is configured, adds a model critique of the synthesis. Its verdict is its own receipt (#8, free). If verification fails, the discrepancy is recorded there and the final answer is annotated, never silently passed.
+The system is honestly a coordinator plus specialists plus an evaluator, not a free-form swarm: the specialists run in a planned order, and the evaluator is the second interaction, a verification pass over their work. Before pricing, an integrity check compares the working vendor data field by field against the registered sources and quarantines any disagreement. The evaluator recomputes the winner from the TCO table recorded in the compute receipt, confirms every dollar figure in the recommendation appears in an earlier receipt, and, when a model is configured, adds a model critique of the synthesis. Its verdict is its own receipt (#8, free), and the dissent follows as receipt #9. If verification fails, the discrepancy is recorded there and the final answer is annotated, never silently passed.
 
 The "why" is the receipt chain. Ask why the agent did something, and it shows you the receipt for the exact reasoning step: what it was paid, what it was told, what it produced.
 
@@ -25,6 +25,14 @@ Three more demo beats:
 - **Ask why.** A "Why?" box answers questions about the run in plain English, grounded in the receipt chain with clickable citations. Try: "why did you pick Stratus Systems?" The answer is labeled with the mode and provider that produced it: a model draft (shown only after its dollar figures and vendor names are verified against the cited receipts) or the built-in template.
 - **The evaluator.** Receipt #8 is a free verification step, not a paid thought. Open it to see the checks: the winner recomputed from the recorded TCO figures, the figure-by-figure trace of the recommendation back to earlier receipts, and a model critique when one is configured.
 - **Break and recover.** Tick "Simulate a step failure" before running. That step's first attempt fails (a $0 receipt records the timeout), the coordinator retries automatically (a "recovered" receipt records the retry), and the pipeline completes. The bill still totals $0.07.
+
+Five twist features are built on the same chain:
+
+- **Sabotage round and integrity quarantine.** Tick "Sabotage round" and one value in the run's working copy of the vendor catalog is corrupted in memory only. The integrity check catches the disagreement against a fresh load of the registered sources before pricing, restores the source value, and receipts the catch. That integrity receipt records the corrupted working rows themselves with `dataSource: "working-catalog"` and `query: null`, because no query returned them; the label says working copy, not query result.
+- **Replayable receipts.** Each data receipt (#2 and #4) records the exact query its own fetch ran, the rows that fetch returned, and which path served them. Replaying a receipt re-executes the recorded query in Zetaris mode through the data layer's own response parser, or re-derives the rows from the CSV sources, and reports MATCH or a field-level DIFF. Replaying the integrity receipt diffs its recorded working rows against a fresh source load and reproduces the caught discrepancy, which is the proof the catch was real.
+- **Dissent receipt.** After the evaluator passes the recommendation, it records the strongest data-backed case for the runner-up (receipt #9 in a default run): the margin, the volumes at which the runner-up would win, its SLA rank, and its support terms. The recommendation stands; the chain shows the alternative was argued from the same data.
+- **Dual-language receipts.** Every data receipt shows its SQL and a plain-English rendering generated from the query intent and the actual rows returned, so a non-SQL reader gets the same provenance a SQL reader gets.
+- **Flip threshold.** The final answer states what would change it: the nearest egress volumes above and below the run's volume at which a different vendor becomes cheapest, computed from the actual records with the real TCO math over 0 to 5,000 TB/yr. The note ships as the `flipNote` field of the run response, and Why answers can cite it as a grounded fact tied to the compute receipt.
 
 ## The non-obvious winner
 
@@ -67,7 +75,14 @@ evaluator.evaluate ............. $0.00 -> receipt #8 (verification: winner recom
   |                                            dollar figure traced to an earlier
   |                                            receipt, optional model critique)
   v
+evaluator.dissent .............. $0.00 -> receipt #9 (strongest case for the
+  |                                            runner-up, from the same records)
+  v
 answer + itemized bill ($0.07 across the 7 paid steps; the evaluator is free)
+
+In a sabotage run the integrity check inserts its own free receipt just before
+compute.compute-tco. Receipt sequence numbers are chain positions, assigned as
+each receipt is emitted, so every later receipt numbers after the inserted one.
 ```
 
 Payments use the x402 pattern with EIP-3009 USDC authorizations on Base Sepolia (see `src/x402.ts`, reused from our tested x402 buyer). Mock mode is the default: payments are simulated with fake signature refs and the UI says so loudly.
@@ -89,7 +104,7 @@ None. The pipeline is hand-rolled TypeScript on Node's built-in `http` module: a
 
 ### How Zetaris is integrated
 
-Zetaris is the data layer. The vendor dataset is prepared as three separate sources (vendor quotes, egress rates, support and SLA terms), bundled as CSV files under `data/` for registration in Zetaris as the matching tables. The pipeline's data steps fetch through the client in `src/zetaris.ts`: when `ZETARIS_BASE_URL` is configured, step 2 runs a SQL join across the three sources and step 4 runs a select against the terms source, and each data receipt records the exact query, the rows it used, and `dataSource: "zetaris"`, so the receipt chain is the query chain. When no instance is configured, when `SAMPLE_MODE` is on, or when the live call errors, the same steps serve the bundled CSV sources and the receipts record `dataSource: "csv-fallback"` instead. The wiring is implemented in the pipeline and verified against a local stub endpoint; a live test against the managed AWS cluster is still pending. The managed cluster's exact HTTP SQL contract is not public, so the endpoint path and auth are environment-configurable in the one module that makes the call. Endpoint: TBD (from the cluster record; credentials are never published).
+Zetaris is the data layer. The vendor dataset is prepared as three separate sources (vendor quotes, egress rates, support and SLA terms), bundled as CSV files under `data/` for registration in Zetaris as the matching tables. The pipeline's data steps fetch through the client in `src/zetaris.ts`: when `ZETARIS_BASE_URL` is configured, step 2 runs a SQL join across the three sources and step 4 runs a select against the terms source, and each data receipt records the exact query, the rows its own fetch returned, and `dataSource: "zetaris"`, so the receipt chain is the query chain. When no instance is configured, when `SAMPLE_MODE` is on, or when the live call errors, the same steps serve the bundled CSV sources and the receipts record `dataSource: "csv-fallback"` instead. The one provenance exception is the integrity receipt: it records the working copy's rows with `dataSource: "working-catalog"` and `query: null`, because no query returned them. The wiring is implemented in the pipeline and verified against a local stub endpoint; a live test against the managed AWS cluster is still pending. The managed cluster's exact HTTP SQL contract is not public, so the endpoint path and auth are environment-configurable in the one module that makes the call. Endpoint: TBD (from the cluster record; credentials are never published).
 
 ### How Meterless is integrated
 
@@ -147,11 +162,13 @@ Open http://localhost:3003. The demo task is prefilled: "Select a vendor for our
 API:
 
 - `GET /api/health` -> `{ ok, mock, sampleMode, pricePerStepUSDC, stepsPerRun }`
-- `POST /api/run` with `{ "task": "..." }` -> `{ answer, bill, receipts, mock, sampleMode }`
+- `POST /api/run` with `{ "task": "..." }` -> `{ answer, bill, receipts, flipNote, mock, sampleMode }`, where `flipNote` is the run's "what would change this answer" line (the nearest egress volumes above and below the run's volume at which the winner changes, or a constancy statement when no volume in 0 to 5,000 TB/yr changes it)
 - `POST /api/run` with `{ "task": "...", "chaos": { "failStep": 3 } }` -> same, but step 3 fails once and recovers
-- `POST /api/challenge` with `{ "task": "...", "receiptSeq": 2, "newInput": "..." }` -> `{ answer, bill, receipts, changedFrom, mock, sampleMode }`
+- `POST /api/run` with `{ "task": "...", "sabotage": true }` -> same, with one working-copy value corrupted in memory so the integrity check can catch it
+- `POST /api/challenge` with `{ "task": "...", "receiptSeq": 2, "newInput": "..." }` -> `{ answer, bill, receipts, changedFrom, flipNote, mock, sampleMode }`
 - `GET /api/verify` -> `{ valid: true }` or `{ valid: false, brokenAt: <seq> }`
-- `POST /api/why` with `{ "question": "..." }` -> `{ answer, citations: [<seq>, ...], mode: "model" | "template", provider: "meterless" | "openrouter" | null, model: <model id> | null }`
+- `POST /api/replay` with `{ "seq": 4 }` -> `{ seq, step, replayable, result: "MATCH" | "DIFF", diffs?: [{ vendor, field, recorded, replayed }], via: "zetaris" | "csv-sources" | "working-copy-vs-sources", reason? }`; it re-derives the receipt's recorded rows (re-executing the recorded query for Zetaris receipts, reloading the CSV sources otherwise) and diffs them field by field
+- `POST /api/why` with `{ "question": "..." }` -> `{ answer, citations: [<seq>, ...], mode: "model" | "template", provider: "meterless" | "openrouter" | null, model: <model id> | null }`; the latest run's `flipNote` is passed into the answer generation as a grounded fact tied to the compute receipt
 
 Live mode (real EIP-3009 signing on Base Sepolia):
 
@@ -186,15 +203,16 @@ With `SAMPLE_MODE=false` (the default), the behavior above flips only where a mo
 
 ## Demo script for judges
 
-1. Click **Run the network** with the default vendor task. Watch 8 receipts appear in the feed: 7 paid reasoning steps at $0.01 each with payer, payee, and signature ref, then a free eighth receipt from the evaluator.
-2. Open receipt **#8 (Evaluator verification)**: verdict PASS, with the winner recomputed from the recorded TCO table and every dollar figure in the recommendation traced to an earlier receipt. Note the bill still reads "This answer cost $0.07 across 7 reasoning steps": the evaluator is a verification step and is not charged.
+1. Click **Run the network** with the default vendor task. Watch 9 receipts appear in the feed: 7 paid reasoning steps at $0.01 each with payer, payee, and signature ref, then a free eighth receipt from the evaluator and a free ninth, the dissent.
+2. Open receipt **#8 (Evaluator verification)**: verdict PASS, with the winner recomputed from the recorded TCO table and every dollar figure in the recommendation traced to an earlier receipt. Note the bill still reads "This answer cost $0.07 across 7 reasoning steps": the evaluator is a verification step and is not charged. Then open receipt **#9 (Dissent)**: the strongest case for the runner-up, argued from the same records.
 3. Read the recommendation: **Stratus Systems at $237K 3-year TCO**, beating Cirrus ($300K) and Nimbus ($306K). Point out the twist: Nimbus has the cheapest headline price ($48K/yr) and still finishes last, because its uncapped $0.12/GB egress costs $48K/yr at this volume. The obvious pick is not the right pick.
 4. Click receipt **#3 (Profile the workload)**. Change its input to "double the data transfer volume". Click **Re-run from this step**.
 5. Watch steps 3 through 7 re-execute (marked "re-executed"): the TCO table reprices at 800TB/yr, Stratus blows through its 500TB egress cap into $0.20/GB overage, and the winner flips to **Cirrus Compute at $408K** (Stratus $429K, Nimbus $450K). Steps 1 and 2 stay unchanged.
 6. Ask **"why did you pick Stratus Systems?"** in the Why box. The answer cites the compute and recommendation receipts with the TCO numbers, and the line under the answer names the mode and provider that produced it (template here, since no model provider is configured; with one configured, a model draft appears only after it passes verification against the cited receipts, and the label names the provider and the exact model id). Click a citation chip to jump to that receipt.
 7. Click **Verify chain**: the badge reads VALID. Then click **Simulate tampering** (client-side only): a copy of one receipt is edited, and the local checker reports `{ valid: false, brokenAt: 3 }`. One edited character breaks the chain from that point on.
 8. Tick **"Simulate a step failure"** and run again: step 2's first attempt fails (a red $0 receipt records the timeout), the retry succeeds (green "recovered" badge), the pipeline completes, and the bill still totals $0.07.
-9. Point at the mock banner: all payments are simulated in this demo; flip `MOCK=false` for real EIP-3009 signatures. Vendor names and quotes are fictional and illustrative.
+9. Tick **"Sabotage round"** and run again: the integrity receipt appears at #5, recording the corrupted working-copy row (labeled working copy, no query), and the value is restored before pricing. Click **Replay against sources** on that receipt: the replay reproduces exactly the one-field diff against the registered sources. Replay receipts #2 and #4 as well: both report MATCH, because each records its own fetch's rows.
+10. Point at the mock banner: all payments are simulated in this demo; flip `MOCK=false` for real EIP-3009 signatures. Vendor names and quotes are fictional and illustrative.
 
 ## Repo layout
 

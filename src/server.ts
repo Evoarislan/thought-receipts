@@ -35,6 +35,8 @@ const PUBLIC_DIR = join(__dirname, "..", "public");
 
 /** Latest run's receipts, kept in memory for /api/verify and /api/why. */
 let latestReceipts: Receipt[] = [];
+/** Latest run's flip note, passed into /api/why as a grounded fact. */
+let latestFlipNote: string | null = null;
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -111,6 +113,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sabotage: body.sabotage === true,
       });
       latestReceipts = receipts;
+      latestFlipNote = flipNote;
       json(res, 200, { answer, bill: buildBill(receipts), receipts, flipNote, mock: MOCK_MODE, sampleMode: SAMPLE_MODE });
       return;
     }
@@ -130,6 +133,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       if (!newInput) throw new Error("newInput is required");
       const { answer, receipts, flipNote } = await runPipeline(body.task, new Map([[seq, newInput]]));
       latestReceipts = receipts;
+      latestFlipNote = flipNote;
       json(res, 200, {
         answer,
         bill: buildBill(receipts),
@@ -165,7 +169,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
     if (req.method === "POST" && pathname === "/api/why") {
       const body = JSON.parse(await readBody(req)) as { question?: string };
-      const result = await answerWhy(latestReceipts, body.question ?? "");
+      const result = await answerWhy(latestReceipts, body.question ?? "", latestFlipNote);
       json(res, 200, result);
       return;
     }
