@@ -2,10 +2,12 @@
  * Lane A smoke check for the bundled vendor sources.
  *
  * Loads the three CSVs in data/ through the zetaris seam, joins them on
- * vendor, prints the joined rows, and then verifies the port: recomputing
- * total cost of ownership from the CSV values with the same formula as
- * computeTCO in src/agents.ts must reproduce the numbers the pipeline
- * produces from its in-code catalog.
+ * vendor, prints the joined rows, and then verifies the catalog:
+ * recomputing total cost of ownership from the CSV values with the same
+ * formula as computeTCO in src/agents.ts must reproduce the numbers the
+ * pipeline produces. The pipeline loads these same sources through
+ * src/zetaris.ts, so this check guards the catalog the demo actually
+ * runs on.
  *
  * Run it from the compiled output: build the repo (npm run build), compile
  * this script alongside src/zetaris.ts, and run the result with node.

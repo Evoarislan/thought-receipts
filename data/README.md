@@ -2,15 +2,16 @@
 
 This folder is a **synthetic sample dataset**: three fictional vendors
 (Nimbus Cloud, Stratus Systems, Cirrus Compute) with illustrative pricing.
-They are not real companies and these are not real prices. The values are a
-faithful port of the vendor catalog in `src/agents.ts` (the `VENDORS`
-array), split into three sources so each can be registered separately in
-Zetaris and joined live in a single SQL query, the same way the pipeline
-combines them in code today.
+They are not real companies and these are not real prices. These sources
+are the canonical vendor catalog: the pipeline loads them per run through
+`src/zetaris.ts`, either by running the matching SQL against a configured
+Zetaris instance (where the same three sources are registered as tables)
+or by reading these CSV files directly as the fallback. One catalog, two
+access paths, and the receipts record which path served each fetch.
 
-The `differentiator` prose attached to each vendor in the code catalog is
-not part of these sources. It is narrative text, not data, and stays in
-`src/agents.ts`.
+The `differentiator` prose attached to each vendor record is not part of
+these sources. It is narrative text, not data, and lives in
+`src/zetaris.ts`, keyed by vendor name.
 
 ## Files
 
