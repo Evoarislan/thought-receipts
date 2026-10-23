@@ -72,14 +72,69 @@ answer + itemized bill ($0.07 across the 7 paid steps; the evaluator is free)
 
 Payments use the x402 pattern with EIP-3009 USDC authorizations on Base Sepolia (see `src/x402.ts`, reused from our tested x402 buyer). Mock mode is the default: payments are simulated with fake signature refs and the UI says so loudly.
 
-## How we built it: AI, models, and sponsors
+## AI and model usage (disclosure)
 
-- **Meterless** is the primary model provider in a provider chain implemented in `src/agents.ts`. When `METERLESS_BASE_URL` and `METERLESS_API_KEY` are set, model calls go to the Meterless endpoint (OpenAI-compatible) running NVIDIA Nemotron; OpenRouter is the fallback when Meterless is not configured or unreachable. The chain is implemented and verified against a local stub endpoint; a live test against the event endpoint is pending the event API key.
-- **Zetaris** is the data layer. The vendor catalog lives in three sources (quotes, egress rates, support and SLA terms), registered in Zetaris as separate tables and bundled as CSV files under `data/`. The pipeline's data steps fetch through `src/zetaris.ts`: when `ZETARIS_BASE_URL` is set, they run SQL against the instance (a join across the three sources for the catalog, a select for the terms) and each data receipt records the query, the returned rows, and `dataSource: "zetaris"`. When no instance is configured, when `SAMPLE_MODE` is on, or when the instance errors, the same steps serve the bundled CSV sources and the receipts record `dataSource: "csv-fallback"` instead. The wiring is implemented and verified against a local stub endpoint; a live test against the managed AWS cluster is still pending the cluster itself, whose AWS credential verification is currently blocked. The managed cluster's exact HTTP SQL contract is not public, so the endpoint path and auth are environment-configurable in the one module that makes the call.
-- **Cursor** is the development environment: this repo was developed and smoke-tested in the Cursor IDE with its Agent.
-- **NVIDIA** Nemotron models are the product's reasoning models, reached through the provider chain above. The model ids in use are `nvidia/nemotron-3-ultra-550b-a55b` (the default `NEMOTRON_MODEL` on the Meterless path) and, on the OpenRouter fallback path, `nvidia/nemotron-3-ultra-550b-a55b:free` then `nvidia/nemotron-3-super-120b-a12b:free`. Model output enters the product in exactly two places: drafting Why answers (shown only after verification against the cited receipts) and critiquing the synthesis inside the evaluator receipt. Both record the provider and the exact model id that answered.
+This section follows the structure required by the Open Agent Hackathon AI Usage Policy, section 6.
+
+### Model providers and models
+
+- Primary provider: Meterless, an OpenAI-compatible endpoint serving NVIDIA Nemotron. Model id: `nvidia/nemotron-3-ultra-550b-a55b` (the default `NEMOTRON_MODEL`). Receipts and Why answers record the id the provider actually returns when it reports one.
+- Fallback provider: OpenRouter, used only when Meterless is not configured or is unreachable. Model ids, tried in order: `nvidia/nemotron-3-ultra-550b-a55b:free`, then `nvidia/nemotron-3-super-120b-a12b:free`. This fallback predates the build window (it was wired Oct 20, 2026) and is disclosed as such.
+- Cursor's own models were used to write and debug code during development (see "How Cursor was used" below). They are not part of the product's run path, and no product API key was entered into Cursor.
+- Model output enters the product in exactly two places: drafting Why-box answers, shown only after every dollar figure and vendor name in the draft is verified against the cited receipts (on any mismatch the draft is discarded and the template answer is used), and critiquing the synthesis inside the evaluator receipt. Every model result records its provider and the exact model id that answered.
+
+### Agent framework
+
+None. The pipeline is hand-rolled TypeScript on Node's built-in `http` module: a coordinator, three specialist agents (research, compute, synthesize), and an evaluator verification pass, running a planned sequence. It is not a free-form multi-agent swarm and is not described as one. The only runtime dependency is `viem`, used for EIP-3009 signing in live payment mode.
+
+### How Zetaris is integrated
+
+Zetaris is the data layer. The vendor dataset is prepared as three separate sources (vendor quotes, egress rates, support and SLA terms), bundled as CSV files under `data/` for registration in Zetaris as the matching tables. The pipeline's data steps fetch through the client in `src/zetaris.ts`: when `ZETARIS_BASE_URL` is configured, step 2 runs a SQL join across the three sources and step 4 runs a select against the terms source, and each data receipt records the exact query, the rows it used, and `dataSource: "zetaris"`, so the receipt chain is the query chain. When no instance is configured, when `SAMPLE_MODE` is on, or when the live call errors, the same steps serve the bundled CSV sources and the receipts record `dataSource: "csv-fallback"` instead. The wiring is implemented in the pipeline and verified against a local stub endpoint; a live test against the managed AWS cluster is still pending. The managed cluster's exact HTTP SQL contract is not public, so the endpoint path and auth are environment-configurable in the one module that makes the call. Endpoint: TBD (from the cluster record; credentials are never published).
+
+### How Meterless is integrated
+
+A provider chain in `src/agents.ts` calls model providers in order: (1) Meterless, when `METERLESS_BASE_URL` and `METERLESS_API_KEY` are set: `POST {METERLESS_BASE_URL}/chat/completions` with a Bearer key, the provider contract headers (`meterless-app: thought-receipts` on every request, `meterless-scope: user` on chat), and model `NEMOTRON_MODEL`, with a 180 second timeout (a cold model load can take minutes); (2) OpenRouter, when `OPENROUTER_API_KEY` is set, 90 second timeout, models as listed above; (3) the deterministic path, with no model call. No named Meterless engine (H-MEM, World Model, Markovian, Scout Intent) is used, and none is claimed; Meterless serves as the Nemotron provider runtime. The chain is implemented and verified against a local OpenAI-compatible stub endpoint; the live test against the real event endpoint is still pending the event API key.
+
+### How Cursor was used
+
+Cursor is the development environment of record on the team laptop. This repo was developed and smoke-tested in the Cursor IDE with its Agent: the smoke test passed Oct 21, 2026 (the Agent created and ran a file in the clone using a Cursor model, with no product API key entered). Hackathon team access provisioning was still marked to be confirmed in the sponsor folder when this was written; the development above used the locally installed Cursor IDE.
+
+### Where NVIDIA contributes
+
+NVIDIA Nemotron models are the product's only reasoning models, reached through the provider chain above. They draft Why answers and critique the synthesis inside the evaluator receipt. NVIDIA technology is used nowhere else in the system. Event API key and credit provisioning was still marked to be confirmed in the sponsor folder when this was written; until it lands, the Nemotron path is exercised through the provider chain above (Meterless first, OpenRouter fallback).
+
+### External tools and libraries
+
+- Runtime: Node.js 20 or newer (developed on Node 24), TypeScript 7.
+- Dependency: `viem` (EIP-3009 authorization signing in live payment mode). Everything else is Node built-ins.
+- Payment pattern: x402, with EIP-3009 USDC authorizations on Base Sepolia (USDC contract `0x036CbD53842c5426634e7929541eC2318f3dCF7e`).
+- Development and production tools: Cursor IDE; the demo video was produced with screen capture of the running app.
+
+### Data sources
+
+- Fictional cloud vendor dataset (synthetic, labeled as sample data everywhere it appears): three invented vendors (Nimbus Cloud, Stratus Systems, Cirrus Compute) with illustrative pricing, prepared as three CSV sources under `data/` (quotes, egress rates, support and SLA terms), with a data dictionary in `data/README.md`.
+- No real vendor quotes, no scraped data, and no personal data are used anywhere in the system.
+
+### Adapted open-source code
+
+The x402 payment helper (`src/x402.ts`) was adapted from the team's own earlier x402 buyer work; it is declared as a pre-existing component (built Oct 19 to 20, 2026) in the submission form, together with the hash-chained receipt store, the coordinator and specialist pipeline, and the fictional vendor dataset. No third-party project code was copied into this repo. Everything else was built inside the build window (Oct 22 to 27, 2026) and is listed in the submission declaration.
+
+### Known limitations
+
+- Coordinator plus three specialists in a planned sequence plus an evaluator verification pass; not a free-form swarm. The evaluator cannot send work back for revision: on a failed check it records the discrepancy and the final answer is annotated, never silently passed.
+- Core reasoning is deterministic logic keyed on the task text. Models only draft Why answers (verified against the cited receipts before display) and critique the synthesis inside the evaluator receipt. With no provider configured, both fall back to deterministic behavior and the demo runs with zero API keys.
+- Scope is a deliberate domain gate: non-procurement tasks receive an honest out-of-scope refusal and a single $0 receipt, not a forced recommendation.
+- Payments are simulated in mock mode, the default. Live mode signs EIP-3009 authorizations on Base Sepolia without submitting them; the seller side of x402 is out of scope for this project.
+- Egress math uses decimal units (1 TB = 1000 GB), and the Stratus 500TB figure is a rate threshold, not free volume: the first 500TB per year are billed at $0.04 per GB and only volume above it at the $0.20 overage rate. See `data/README.md`.
+- Zetaris: the data-layer wiring is implemented in the pipeline and verified against a local stub endpoint; the live AWS cluster test is pending. Meterless: the provider chain is implemented with the provider contract headers and verified against a local stub endpoint; the live endpoint test is pending the event API key.
+
+### Fallback and sample-mode behavior
+
+See the "Sample mode" section below. In short: `SAMPLE_MODE=true` makes no external network calls at all (model providers are refused even when keys are set) and runs the deterministic path over the bundled labeled sample dataset, disclosed in the health payload, the run payloads, and a UI banner. In default mode the same deterministic path serves any run where no model provider is configured, and the payload reports `sampleMode: false` because the model path is enabled but unused.
 
 ## Run it
+
+Requires Node.js 20 or newer (developed on Node 24) and npm.
 
 ```bash
 npm install
@@ -156,11 +211,8 @@ With `SAMPLE_MODE=false` (the default), the behavior above flips only where a mo
 
 ## Honest notes
 
-- The pipeline is a coordinator plus three specialists running a planned sequence, plus an evaluator that verifies the result against the receipts. It is not a free-form multi-agent swarm, and the README does not claim otherwise.
-- Core reasoning is deterministic logic keyed on the task text. The model, when a provider is configured (Meterless serving Nemotron first, OpenRouter as fallback), does two bounded jobs: drafting Why answers (verified against the cited receipts before being shown) and critiquing the synthesis inside the evaluator receipt. With no provider, both fall back to deterministic behavior and the demo runs with zero API keys.
-- `SAMPLE_MODE=true` disables the model seam entirely, so a run makes no external network calls. That is the mode to judge in when you have no keys.
-- Mock mode simulates payments. Nothing here moves real money unless you set `MOCK=false` with your own key.
-- The receipt chain, the bill math, the evaluator checks, and the challenge re-execution are all real and deterministic.
+- The receipt chain, the bill math, the evaluator checks, and the challenge re-execution are all real and deterministic. Nothing in the demo is a hardcoded output: two different in-scope inputs produce different figures and different chains (verified in the submission dry run).
+- Receipts carry the policy evidence fields: timestamp, agent name, action, input and output summaries, handoff target, model, status, and retry count.
 
 ## License
 
