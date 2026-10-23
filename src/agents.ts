@@ -299,18 +299,30 @@ export function isInScope(task: string): boolean {
 }
 
 /**
- * Annual data transfer in TB, parsed from step input. The challenge flow
- * overrides a step's input, so "double the data transfer volume" typed into
- * the challenge panel lands here and re-prices everything downstream.
+ * Annual data transfer in TB stated by a step input, or null when the
+ * input is silent about volume. The challenge flow overrides a step's
+ * input, so "double the data transfer volume" typed into the challenge
+ * panel lands here as a statement and re-prices everything downstream.
+ * Silence is not a statement: a caller re-pricing from an edited input
+ * must not read it as the default below, or an edit that never mentions
+ * volume would silently re-price at a volume the run never profiled.
  */
-export function parseVolumeTB(text: string): number {
+export function parseStatedVolumeTB(text: string): number | null {
   const t = text.toLowerCase();
   const explicit = /(\d+(?:\.\d+)?)\s*tb/.exec(t);
   if (explicit) return Math.min(10000, Math.max(1, parseFloat(explicit[1])));
   if (/triple|3x|three times/.test(t)) return 1200;
   if (/double|2x|twice/.test(t)) return 800;
   if (/half/.test(t)) return 200;
-  return 400;
+  return null;
+}
+
+/**
+ * The workload step's parse of the same input: a task that states no
+ * volume profiles the documented default of 400 TB/yr.
+ */
+export function parseVolumeTB(text: string): number {
+  return parseStatedVolumeTB(text) ?? 400;
 }
 
 function fmt(n: number): string {
@@ -965,13 +977,17 @@ const STEP_DEFS: StepDef[] = [
       `compute plus egress plus support`,
     execute: (ctx, input) => {
       // This step's input is its pricing instruction: the built input
-      // names the volume the math runs at ("at 400TB/yr egress"), so the
-      // volume is read back out of the input here. A challenge that edits
-      // this step's input ("double the data transfer volume") therefore
-      // re-prices at the edited volume, exactly as editing the workload
-      // step does. On an unedited run the built input restates the
-      // profiled volume, so nothing changes.
-      ctx.volumeTB = parseVolumeTB(input);
+      // names the volume the math runs at ("at 400TB/yr egress"), so a
+      // volume the input states is read back out of it here. A challenge
+      // that edits this step's input ("double the data transfer volume")
+      // therefore re-prices at the edited volume, exactly as editing the
+      // workload step does. On an unedited run the built input restates
+      // the profiled volume, so nothing changes. An edit silent about
+      // volume states nothing, so the volume the workload step profiled
+      // stands: silence never resets the price to a volume this run
+      // never profiled.
+      const statedVolume = parseStatedVolumeTB(input);
+      if (statedVolume !== null) ctx.volumeTB = statedVolume;
       const rows = ctx.vendors.map((v) => computeTCO(v, ctx.volumeTB, ctx.profile.termYears));
       rows.sort((a, b) => a.tco - b.tco);
       ctx.tcoRows = rows;
