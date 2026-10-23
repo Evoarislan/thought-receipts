@@ -571,10 +571,10 @@ async function simulateTampering() {
 function openChallenge(r) {
   challengeSeq = r.seq;
   challengeReceipt = r;
-  $("chTitle").textContent = `Challenge step ${r.seq}: ${r.title}`;
+  $("chTitle").textContent = `Challenge receipt #${r.seq}: ${r.title}`;
   $("chMeta").innerHTML =
     `Agent: <b>${escapeHtml(r.agent)}</b> · Paid <b>$${escapeHtml(r.amountUSDC)}</b><br>` +
-    `Re-running from here re-executes steps ${r.seq} through ${HEALTH.stepsPerRun}. Earlier steps stay unchanged.`;
+    `Receipt #${r.seq} is this step's place in the current chain. Re-running from here re-executes the <b>${escapeHtml(r.step)}</b> step and every step downstream of it; earlier steps stay unchanged.`;
   $("chInput").value = r.inputFull;
   $("chOut").textContent = r.detail;
   $("challengePanel").hidden = false;
@@ -602,7 +602,7 @@ async function submitChallenge() {
     closeChallenge();
     renderRun(
       data,
-      `Challenged step ${data.changedFrom}. Steps ${data.changedFrom} to ${data.receipts.length} re-executed from your edited input; earlier steps are unchanged. New total: $${data.bill.totalUSDC}.`
+      `Challenged receipt #${data.changedFrom}: the ${data.stepTitle} step (${data.step}) was re-executed from your edited input, together with every step downstream of it. Earlier steps are unchanged. New total: $${data.bill.totalUSDC}.`
     );
   } catch (e) {
     $("note").hidden = false;

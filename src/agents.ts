@@ -779,6 +779,21 @@ interface StepDef {
   execute: (ctx: Ctx, input: string) => StepOutput | Promise<StepOutput>;
 }
 
+/**
+ * The logical step number (a STEP_DEFS seq) for a receipt's step name, or
+ * null when the step is not one of the seven paid steps. The $0 system
+ * receipts (scope check, integrity check, evaluator, dissent) return
+ * null: they record no step input, so there is nothing to challenge.
+ * Receipt sequence numbers are chain positions, which diverge from
+ * logical step numbers whenever a run inserts a system receipt or a
+ * chaos attempt; the challenge flow resolves a posted chain position
+ * through the stored chain to the receipt's step, then to this number.
+ */
+export function logicalSeqForStep(step: string): number | null {
+  const def = STEP_DEFS.find((d) => d.step === step);
+  return def ? def.seq : null;
+}
+
 /** "Stratus Systems" -> "Stratus Systems'"; "Nimbus Cloud" -> "Nimbus Cloud's". */
 function possessive(name: string): string {
   return name.endsWith("s") ? `${name}'` : `${name}'s`;
@@ -793,7 +808,7 @@ function quoteCard(v: Vendor): string {
   const cap = v.egressCapTB === null ? "no cap" : `first ${v.egressCapTB}TB/yr at this rate, then ${fmt(v.egressOveragePerGB)}/GB overage`;
   return (
     `- ${v.name}: compute ${fmt(v.headlineAnnual)}/yr, egress ${fmt(v.egressPerGB)}/GB (${cap}), ` +
-    `support ${fmt(v.supportAnnual)}/yr (${v.supportTier}), SLA ${v.sla}. Edge: ${v.differentiator}.`
+    `support ${fmt(v.supportAnnual)}/yr (${v.supportTier}), SLA ${v.sla}. Edge: ${v.differentiator || "none recorded"}.`
   );
 }
 
@@ -948,7 +963,15 @@ const STEP_DEFS: StepDef[] = [
     buildInput: (ctx) =>
       `${ctx.profile.termYears}-year TCO for ${ctx.vendors.map((v) => v.name).join(", ")} at ${ctx.volumeTB}TB/yr egress, ` +
       `compute plus egress plus support`,
-    execute: (ctx, _input) => {
+    execute: (ctx, input) => {
+      // This step's input is its pricing instruction: the built input
+      // names the volume the math runs at ("at 400TB/yr egress"), so the
+      // volume is read back out of the input here. A challenge that edits
+      // this step's input ("double the data transfer volume") therefore
+      // re-prices at the edited volume, exactly as editing the workload
+      // step does. On an unedited run the built input restates the
+      // profiled volume, so nothing changes.
+      ctx.volumeTB = parseVolumeTB(input);
       const rows = ctx.vendors.map((v) => computeTCO(v, ctx.volumeTB, ctx.profile.termYears));
       rows.sort((a, b) => a.tco - b.tco);
       ctx.tcoRows = rows;
@@ -983,7 +1006,7 @@ const STEP_DEFS: StepDef[] = [
           `\n\nWinner on total cost: ${ctx.winner.vendor.name} at ${fmtK(ctx.winner.tco)}, ` +
           `${fmtK(runnerUp.tco - ctx.winner.tco)} below the runner-up ${runnerUp.vendor.name} (${fmtK(runnerUp.tco)}). ` +
           `Headline price misleads: the cheapest headline (${cheapestHeadline.vendor.name}, ${fmt(cheapestHeadline.vendor.headlineAnnual)}/yr) finishes ` +
-          `${rows.indexOf(cheapestHeadline) + 1} of 3 because egress dominates the total.`,
+          `${rows.indexOf(cheapestHeadline) + 1} of ${rows.length} because egress dominates the total.`,
       };
     },
   },
@@ -997,8 +1020,16 @@ const STEP_DEFS: StepDef[] = [
       const w = ctx.winner;
       const rows = ctx.tcoRows;
       const runnerUp = rows[1];
-      const nimbus = rows.find((r) => r.vendor.name === "Nimbus Cloud");
-      if (!w || !runnerUp || !nimbus) {
+      // The cautionary example is picked by role from the records, never
+      // by vendor name: the vendor with the highest base egress rate. In
+      // the shipped catalog that is Nimbus Cloud, which also happens to
+      // be the cheapest headline; neither fact is assumed here, both are
+      // read from the records below, so a different catalog produces a
+      // recommendation about its own vendors.
+      const priciestEgress = rows.length > 0
+        ? rows.reduce((a, b) => (b.vendor.egressPerGB > a.vendor.egressPerGB ? b : a))
+        : undefined;
+      if (!w || !runnerUp || !priciestEgress) {
         ctx.recommendation = "TCO not computed; cannot recommend.";
       } else {
         const savingVsRunnerUp = w.tco === runnerUp.tco ? 0 : runnerUp.tco - w.tco;
@@ -1016,15 +1047,29 @@ const STEP_DEFS: StepDef[] = [
           w.vendor.supportAnnual >= priciestSupport
             ? `Support is ${w.vendor.supportTier} at ${fmt(w.vendor.supportAnnual)}/yr, the most comprehensive package in the field.`
             : `Support is ${w.vendor.supportTier} at ${fmt(w.vendor.supportAnnual)}/yr.`;
+        const countWord = (n: number): string =>
+          n === 2 ? "two" : n === 3 ? "three" : n === 4 ? "four" : String(n);
         const budgetClaim = ctx.vendors.every((v) => v.headlineAnnual <= ctx.profile.contractAnnual)
-          ? `All three headlines fit the ${fmt(ctx.profile.contractAnnual)}/yr compute budget, so the decision comes down to total cost`
+          ? `All ${countWord(ctx.vendors.length)} headlines fit the ${fmt(ctx.profile.contractAnnual)}/yr compute budget, so the decision comes down to total cost`
           : `The headlines straddle the ${fmt(ctx.profile.contractAnnual)}/yr compute budget, so the decision comes down to total cost`;
+        const pe = priciestEgress.vendor;
+        const egressClaim =
+          pe.egressCapTB === null
+            ? `its uncapped ${fmt(pe.egressPerGB)}/GB egress costs ${fmt(priciestEgress.egressAnnual)}/yr at this volume`
+            : `its ${fmt(pe.egressPerGB)}/GB egress costs ${fmt(priciestEgress.egressAnnual)}/yr at this volume (first ${pe.egressCapTB}TB/yr at that rate, then ${fmt(pe.egressOveragePerGB)}/GB overage)`;
+        const cheapestHeadline = Math.min(...rows.map((r) => r.vendor.headlineAnnual));
+        const exampleClaim =
+          pe.headlineAnnual <= cheapestHeadline
+            ? `${pe.name} has the cheapest headline (${fmt(pe.headlineAnnual)}/yr) but finishes at ${fmtK(priciestEgress.tco)} because ${egressClaim}. `
+            : `${pe.name} finishes at ${fmtK(priciestEgress.tco)} because ${egressClaim}. `;
+        const edgeClaim = w.vendor.differentiator
+          ? `where ${possessive(w.vendor.name)} ${w.vendor.differentiator} wins`
+          : `where its recorded terms win`;
         ctx.recommendation =
           `Recommend ${w.vendor.name} for the ${ctx.profile.termYears}-year contract.\n` +
           `Rationale: ${ctx.profile.termYears}-year TCO of ${fmtK(w.tco)} at ${ctx.volumeTB}TB/yr egress, ` +
           `${fmtK(savingVsRunnerUp)} below ${runnerUp.vendor.name} (${fmtK(runnerUp.tco)}). ` +
-          `Nimbus Cloud has the cheapest headline (${fmt(nimbus.vendor.headlineAnnual)}/yr) but finishes at ${fmtK(nimbus.tco)} because its uncapped ` +
-          `${fmt(nimbus.vendor.egressPerGB)}/GB egress costs ${fmt(nimbus.egressAnnual)}/yr at this volume. ${budgetClaim}, where ${possessive(w.vendor.name)} ${w.vendor.differentiator} wins. ` +
+          `${exampleClaim}${budgetClaim}, ${edgeClaim}. ` +
           `${supportClaim} ${slaClaim}`;
       }
       // If the integrity check caught corrupted working data earlier in
@@ -1617,7 +1662,7 @@ export async function runPipeline(
           : ru.supportAnnual < winner.vendor.supportAnnual
             ? `, ${fmt(winner.vendor.supportAnnual - ru.supportAnnual)}/yr cheaper than the winner's package.`
             : `.`) +
-        ` Its stated edge: ${ru.differentiator}.`
+        (ru.differentiator ? ` Its stated edge: ${ru.differentiator}.` : ` No differentiator is recorded for it in the sources.`)
     );
     const dissentDef: StepDef = {
       seq: 0,

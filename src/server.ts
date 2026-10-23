@@ -15,6 +15,14 @@
  *
  * /api/challenge re-runs the pipeline from one receipt with edited input and
  * returns the new chain. Steps before the challenged one are unchanged.
+ * The posted receiptSeq is a chain position in the latest run (the number
+ * the UI shows on the receipt), not a logical step number: positions and
+ * step numbers diverge whenever a run inserts a $0 system receipt or a
+ * chaos attempt. The handler resolves the position through the stored
+ * chain to the receipt's step, then applies the override to that step.
+ * Positions that land on a $0 system receipt (evaluator, dissent,
+ * integrity, scope check) are refused with an honest 400, because those
+ * receipts record no step input to edit.
  *
  * /api/run accepts optional chaos: { failStep: n } to simulate a step
  * failure and automatic recovery. The latest run's receipts are kept in
@@ -24,7 +32,7 @@ import { createServer, IncomingMessage, ServerResponse } from "http";
 import { readFile } from "fs/promises";
 import { dirname, join, normalize } from "path";
 import { fileURLToPath } from "url";
-import { runPipeline, replayReceipt, SAMPLE_MODE, STEP_COUNT } from "./agents.js";
+import { logicalSeqForStep, runPipeline, replayReceipt, SAMPLE_MODE, STEP_COUNT } from "./agents.js";
 import { buildBill, verifyChain, type Receipt } from "./receipts.js";
 import { answerWhy } from "./why.js";
 import { MOCK_MODE, PRICE_PER_STEP_USDC } from "./x402.js";
@@ -124,14 +132,42 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         receiptSeq?: number;
         newInput?: string;
       };
-      const seq = Number(body.receiptSeq);
+      const pos = Number(body.receiptSeq);
       const newInput = (body.newInput || "").trim().slice(0, 500);
       if (!body.task || !body.task.trim()) throw new Error("task is required");
-      if (!Number.isInteger(seq) || seq < 1 || seq > STEP_COUNT) {
-        throw new Error(`receiptSeq must be between 1 and ${STEP_COUNT}`);
+      if (!Number.isInteger(pos) || pos < 1) {
+        throw new Error(
+          "receiptSeq must be a positive integer: the receipt's position in the latest run's chain"
+        );
       }
       if (!newInput) throw new Error("newInput is required");
-      const { answer, receipts, flipNote } = await runPipeline(body.task, new Map([[seq, newInput]]));
+      // Resolve the posted chain position against the latest run's stored
+      // chain. The stored chain is the bridge between the two numberings:
+      // its receipts carry both their position (seq) and their step.
+      if (latestReceipts.length === 0) {
+        throw new Error("No run yet. Run the network first, then challenge a receipt from that run.");
+      }
+      const target = latestReceipts.find((r) => r.seq === pos);
+      if (!target) {
+        throw new Error(
+          `Receipt ${pos} is not in the latest run, which has ${latestReceipts.length} receipt${latestReceipts.length === 1 ? "" : "s"}. Challenge a receipt from the current chain.`
+        );
+      }
+      const stepSeq = logicalSeqForStep(target.step);
+      if (stepSeq === null) {
+        const what =
+          target.step === "evaluate"
+            ? "the evaluator's verification receipt"
+            : target.step === "dissent"
+              ? "the dissent receipt, the evaluator's recorded case for the runner-up"
+              : target.step === "integrity-check"
+                ? "the data integrity check receipt"
+                : target.step === "scope-check"
+                  ? "the scope-check receipt"
+                  : `a $0 system receipt ("${target.step}")`;
+        throw new Error(`Receipt ${pos} is ${what}, not a paid step; challenge a paid step instead.`);
+      }
+      const { answer, receipts, flipNote } = await runPipeline(body.task, new Map([[stepSeq, newInput]]));
       latestReceipts = receipts;
       latestFlipNote = flipNote;
       json(res, 200, {
@@ -139,7 +175,10 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         bill: buildBill(receipts),
         receipts,
         flipNote,
-        changedFrom: seq,
+        changedFrom: pos,
+        step: target.step,
+        stepTitle: target.title,
+        stepSeq,
         mock: MOCK_MODE,
         sampleMode: SAMPLE_MODE,
       });
