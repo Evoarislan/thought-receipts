@@ -69,6 +69,16 @@
   .rnote { margin-top: 6px; font-size: 12.5px; color: var(--amber); }
   .rtx { margin-top: 8px; font-family: ui-monospace, monospace; font-size: 11.5px; color: #5d6878; }
   .rhint { margin-top: 6px; font-size: 12px; color: var(--blue); }
+  .rdata { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 10px; }
+  .rdata .sql { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--violet);
+    background: rgba(196,167,255,.06); border: 1px solid rgba(196,167,255,.25); border-radius: 8px;
+    padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
+  .rdata .plain { margin-top: 6px; font-size: 13px; color: var(--text); line-height: 1.5; }
+  .rdata .replayOut { margin-top: 8px; font-size: 13px; line-height: 1.55; }
+  .rdata .replayOut.match { color: var(--green); }
+  .rdata .replayOut.diff { color: var(--amber); }
+  #flipLine { background: rgba(110,231,160,.08); border: 1px solid rgba(110,231,160,.35);
+    border-radius: 10px; padding: 10px 14px; font-size: 13.5px; margin-bottom: 14px; color: #a9f0c6; }
   #billWow { font-size: 17px; font-weight: 700; color: var(--green); margin-bottom: 12px; }
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
@@ -123,6 +133,9 @@
       <select id="chaosStep"></select>
     </div>
     <div class="row">
+      <label class="inline hint"><input type="checkbox" id="sabotageToggle"> Sabotage round (integrity drill: one vendor data value is corrupted in the working copy, in memory only; the integrity checker compares against the registered sources and should catch and quarantine it before pricing)</label>
+    </div>
+    <div class="row">
       <button id="runBtn">Run the network</button>
       <span class="hint" id="priceHint"></span>
     </div>
@@ -167,6 +180,7 @@
 
   <section class="card" id="answerWrap" hidden>
     <h2>Answer</h2>
+    <div id="flipLine" hidden></div>
     <pre id="answer"></pre>
   </section>
 </main>
@@ -260,9 +274,67 @@ function receiptCard(r, idx) {
     `<div class="rtx">tx ${escapeHtml(String(r.txRef).slice(0, 26))}${String(r.txRef).length > 26 ? "..." : ""} · hash ${escapeHtml(String(r.hash).slice(0, 12))}...</div>` +
     (isEvaluator
       ? `<div class="rhint">Verification step: checks the answer against the receipts above. Not a paid step, and not challengeable.</div>`
-      : `<div class="rhint">Click to challenge this step</div>`);
+      : `<div class="rhint">Click to challenge this step</div>`) +
+    dataBlockHtml(r);
+  const replayBtn = el.querySelector(".replayBtn");
+  if (replayBtn) {
+    replayBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      replayReceipt(r, el.querySelector(".replayOut"), replayBtn);
+    });
+  }
   if (!isEvaluator) el.addEventListener("click", () => openChallenge(r));
   return el;
+}
+
+// Dual-language block for data receipts: the SQL the step ran, the same
+// query in plain English, and a Replay button that re-derives the rows
+// from the registered sources and diffs them against the recorded rows.
+function dataBlockHtml(r) {
+  if (!r.query && !r.plainEnglish && !Array.isArray(r.rows)) return "";
+  let h = `<div class="rdata">`;
+  if (r.query) h += `<div class="sql">SQL · ${escapeHtml(r.query)}</div>`;
+  if (r.plainEnglish) h += `<div class="plain">${escapeHtml(r.plainEnglish)}</div>`;
+  if (Array.isArray(r.rows)) {
+    h += `<div style="margin-top:8px"><button class="ghost small replayBtn">Replay against sources</button></div>` +
+      `<div class="replayOut"></div>`;
+  }
+  return h + `</div>`;
+}
+
+function fmtReplayVal(v) {
+  return v === null || v === undefined ? "(none)" : String(v);
+}
+
+async function replayReceipt(r, out, btn) {
+  if (!out) return;
+  btn.disabled = true;
+  out.className = "replayOut";
+  out.textContent = "Replaying: re-deriving the rows from the registered sources...";
+  try {
+    const res = await fetch("/api/replay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seq: r.seq }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    if (!data.replayable) {
+      out.textContent = "Replay unavailable: " + (data.reason || "this receipt recorded no data rows.");
+    } else if (data.result === "MATCH") {
+      out.className = "replayOut match";
+      out.textContent = `Replay: MATCH. A fresh read of the registered sources returns exactly the rows this receipt recorded${data.via === "zetaris" ? " (re-executed against Zetaris)" : ""}.`;
+    } else {
+      out.className = "replayOut diff";
+      const parts = (data.diffs || []).map((d) =>
+        `${d.vendor}, ${d.field}: recorded ${fmtReplayVal(d.recorded)} vs source ${fmtReplayVal(d.replayed)}`);
+      out.textContent = `Replay: DIFF. The recorded rows disagree with a fresh read of the registered sources: ${parts.join("; ")}.`;
+    }
+  } catch (e) {
+    out.textContent = "Replay failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function renderRun(data, noteText) {
@@ -290,13 +362,13 @@ function renderRun(data, noteText) {
       $("feed").appendChild(receiptCard(r, i));
       if (i === data.receipts.length - 1) {
         $("replayNote").hidden = true;
-        renderBill(data.bill, data.answer);
+        renderBill(data.bill, data.answer, data.flipNote);
       }
     }, 450 * (i + 1));
   });
 }
 
-function renderBill(bill, answer) {
+function renderBill(bill, answer, flipNote) {
   const paid = bill.lines.filter((l) => l.status !== "failed" && l.agent !== "evaluator").length;
   $("billWow").textContent = `This answer cost $${bill.totalUSDC} across ${paid} reasoning step${paid === 1 ? "" : "s"}. Every step is receipted above.`;
   const mockNote = $("billMockNote");
@@ -315,6 +387,14 @@ function renderBill(bill, answer) {
     ).join("") +
     `<tr class="total"><td></td><td>Total</td><td></td><td class="num">$${escapeHtml(bill.totalUSDC)}</td></tr>`;
   $("billWrap").hidden = false;
+  const flipLine = $("flipLine");
+  if (flipNote) {
+    flipLine.hidden = false;
+    flipLine.textContent = flipNote;
+  } else {
+    flipLine.hidden = true;
+    flipLine.textContent = "";
+  }
   $("answer").textContent = answer;
   $("answerWrap").hidden = false;
   $("billWrap").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -329,6 +409,7 @@ async function runNetwork() {
   try {
     const body = { task };
     if ($("chaosToggle").checked) body.chaos = { failStep: Number($("chaosStep").value) };
+    if ($("sabotageToggle").checked) body.sabotage = true;
     const res = await fetch("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -336,11 +417,16 @@ async function runNetwork() {
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
+    const notes = [];
     const failed = data.receipts.find((r) => r.status === "failed");
-    const note = failed
-      ? `Step ${failed.seq} failed on its first attempt (simulated) and recovered on retry. The failed attempt cost $0. New total: $${data.bill.totalUSDC}.`
-      : null;
-    renderRun(data, note);
+    if (failed) {
+      notes.push(`Step ${failed.seq} failed on its first attempt (simulated) and recovered on retry. The failed attempt cost $0. New total: $${data.bill.totalUSDC}.`);
+    }
+    const integrity = data.receipts.find((r) => r.step === "integrity-check");
+    if (integrity) {
+      notes.push("Integrity drill result: the checker caught a corrupted value in the working data, quarantined it, and restored the registered source value before pricing. See the integrity receipt in the chain, and replay the contract terms receipt to see the recorded value diff against the source.");
+    }
+    renderRun(data, notes.length ? notes.join(" ") : null);
   } catch (e) {
     $("note").hidden = false;
     $("note").textContent = "Run failed: " + e.message;

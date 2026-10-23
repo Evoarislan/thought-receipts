@@ -39,6 +39,27 @@ export interface Receipt {
   targetAgent: string | null;
   /** Retry count for this step: 0 for a first attempt, incremented on retries. */
   retryCount: number;
+  /**
+   * Data contract (data receipts only): the query the step ran against the
+   * registered sources, in SQL form. Absent on non-data receipts and on
+   * receipts produced before the data contract existed.
+   */
+  query?: string;
+  /**
+   * Data contract (data receipts only): the rows the step actually read
+   * from its working data, one record per vendor, keyed by source column
+   * name. Recorded so a later replay can re-derive the rows from the
+   * sources and diff them against what the step saw.
+   */
+  rows?: Array<Record<string, string | number | null>>;
+  /** Data contract (data receipts only): where the step's data came from. */
+  dataSource?: "zetaris" | "csv-fallback";
+  /**
+   * Dual-language receipts: a plain-English rendering of the step's query
+   * and the rows it returned, generated from the query intent and the
+   * actual rows (never hand-written per run).
+   */
+  plainEnglish?: string;
   /** Hash of the previous receipt in the chain, or "GENESIS" for the first. */
   prevHash: string;
   /** sha256 hex of (prevHash + canonical JSON of this receipt minus hash). */

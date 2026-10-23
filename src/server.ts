@@ -6,6 +6,12 @@
  *   POST /api/challenge  -> { answer, bill, receipts, changedFrom, mock, sampleMode }
  *   GET  /api/verify     -> { valid } or { valid: false, brokenAt }
  *   POST /api/why        -> { answer, citations, mode, provider, model }
+ *   POST /api/replay     -> { seq, step, replayable, result?, diffs?, via?, reason? }
+ *
+ * /api/run also accepts sabotage: true for the integrity drill: one value
+ * in the run's working vendor data is corrupted in memory only, and the
+ * pipeline's integrity check is expected to catch it against the
+ * registered sources before pricing.
  *
  * /api/challenge re-runs the pipeline from one receipt with edited input and
  * returns the new chain. Steps before the challenged one are unchanged.
@@ -18,7 +24,7 @@ import { createServer, IncomingMessage, ServerResponse } from "http";
 import { readFile } from "fs/promises";
 import { dirname, join, normalize } from "path";
 import { fileURLToPath } from "url";
-import { runPipeline, SAMPLE_MODE, STEP_COUNT } from "./agents.js";
+import { runPipeline, replayReceipt, SAMPLE_MODE, STEP_COUNT } from "./agents.js";
 import { buildBill, verifyChain, type Receipt } from "./receipts.js";
 import { answerWhy } from "./why.js";
 import { MOCK_MODE, PRICE_PER_STEP_USDC } from "./x402.js";
@@ -90,6 +96,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const body = JSON.parse(await readBody(req)) as {
         task?: string;
         chaos?: { failStep?: number };
+        sabotage?: boolean;
       };
       if (!body.task || !body.task.trim()) throw new Error("task is required");
       let chaos: { failStep: number } | undefined;
@@ -100,9 +107,11 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         }
         chaos = { failStep: n };
       }
-      const { answer, receipts } = await runPipeline(body.task, new Map(), chaos);
+      const { answer, receipts, flipNote } = await runPipeline(body.task, new Map(), chaos, {
+        sabotage: body.sabotage === true,
+      });
       latestReceipts = receipts;
-      json(res, 200, { answer, bill: buildBill(receipts), receipts, mock: MOCK_MODE, sampleMode: SAMPLE_MODE });
+      json(res, 200, { answer, bill: buildBill(receipts), receipts, flipNote, mock: MOCK_MODE, sampleMode: SAMPLE_MODE });
       return;
     }
 
@@ -119,16 +128,29 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         throw new Error(`receiptSeq must be between 1 and ${STEP_COUNT}`);
       }
       if (!newInput) throw new Error("newInput is required");
-      const { answer, receipts } = await runPipeline(body.task, new Map([[seq, newInput]]));
+      const { answer, receipts, flipNote } = await runPipeline(body.task, new Map([[seq, newInput]]));
       latestReceipts = receipts;
       json(res, 200, {
         answer,
         bill: buildBill(receipts),
         receipts,
+        flipNote,
         changedFrom: seq,
         mock: MOCK_MODE,
         sampleMode: SAMPLE_MODE,
       });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/replay") {
+      const body = JSON.parse(await readBody(req)) as { seq?: number };
+      const seq = Number(body.seq);
+      if (!Number.isInteger(seq) || seq < 1) throw new Error("seq must be a positive integer");
+      if (latestReceipts.length === 0) {
+        json(res, 200, { seq, step: "", replayable: false, reason: "No run yet. Run the network first, then replay a receipt." });
+        return;
+      }
+      json(res, 200, await replayReceipt(latestReceipts, seq));
       return;
     }
 
