@@ -43,13 +43,25 @@ export interface Receipt {
    * Data provenance, present only on receipts whose step fetched data:
    * the SQL the step ran against the data layer. The same SQL text is
    * recorded when the bundled CSV fallback served the fetch, because it
-   * is the query the fetch stands for in both modes.
+   * is the query the fetch stands for in both modes. Absent on non-data
+   * receipts.
    */
   query?: string;
-  /** Data provenance: the rows the step's fetch actually used, as compact string records. */
-  rows?: Record<string, string>[];
+  /**
+   * Data provenance: the rows the step's fetch actually used, one record
+   * per vendor, keyed by source column name. Recorded so a later replay
+   * can re-derive the rows from the sources and diff them against what
+   * the step saw.
+   */
+  rows?: Array<Record<string, string | number | null>>;
   /** Data provenance: which path served the fetch, live Zetaris SQL or the bundled CSV fallback. */
   dataSource?: "zetaris" | "csv-fallback";
+  /**
+   * Dual-language receipts: a plain-English rendering of the step's query
+   * and the rows it returned, generated from the query intent and the
+   * actual rows (never hand-written per run).
+   */
+  plainEnglish?: string;
   /** Hash of the previous receipt in the chain, or "GENESIS" for the first. */
   prevHash: string;
   /** sha256 hex of (prevHash + canonical JSON of this receipt minus hash). */
