@@ -21,14 +21,21 @@
  */
 import { payForStep, AGENT_WALLETS, USER_WALLET, PRICE_PER_STEP_USDC, MOCK_MODE } from "./x402.js";
 import { chainReceipts, type Receipt, type ReceiptStatus } from "./receipts.js";
+import {
+  fetchCatalog,
+  fetchTerms,
+  buildVendorRecords,
+  type SourceFetch,
+} from "./zetaris.js";
 
 export const STEP_COUNT = 7;
 export const PRICE_PER_STEP = PRICE_PER_STEP_USDC;
 
 /**
  * SAMPLE_MODE=true: fully offline sample run. No external network calls are
- * made at all (reasonWithModel refuses to run), reasoning stays on the
- * deterministic path, the why box uses its template answers, and the
+ * made at all (reasonWithModel refuses to run, and the data layer serves
+ * the bundled CSV sources without attempting live SQL), reasoning stays on
+ * the deterministic path, the why box uses its template answers, and the
  * evaluator runs its deterministic checks only. Disclosed in /api/health,
  * in the run payloads, and in a UI banner. Default: false.
  */
@@ -301,44 +308,13 @@ function fmtK(n: number): string {
 }
 
 // --- Vendor catalog ----------------------------------------------------------
-// Fictional vendors and illustrative quotes. Not real prices from real
-// companies; the point is the shape of the decision, not the numbers.
-
-const VENDORS: Vendor[] = [
-  {
-    name: "Nimbus Cloud",
-    headlineAnnual: 48000,
-    egressPerGB: 0.12,
-    egressCapTB: null,
-    egressOveragePerGB: 0.12,
-    supportAnnual: 6000,
-    supportTier: "business-hours ticket queue",
-    sla: "99.9%",
-    differentiator: "cheapest headline compute price",
-  },
-  {
-    name: "Stratus Systems",
-    headlineAnnual: 54000,
-    egressPerGB: 0.04,
-    egressCapTB: 500,
-    egressOveragePerGB: 0.2,
-    supportAnnual: 9000,
-    supportTier: "24/7 engineer hotline",
-    sla: "99.99%",
-    differentiator: "flat low egress rate inside a 500TB/yr cap, premium support",
-  },
-  {
-    name: "Cirrus Compute",
-    headlineAnnual: 60000,
-    egressPerGB: 0.09,
-    egressCapTB: null,
-    egressOveragePerGB: 0.09,
-    supportAnnual: 4000,
-    supportTier: "community forum plus tickets",
-    sla: "99.95%",
-    differentiator: "no egress cap, predictable cost at any scale",
-  },
-];
+// The catalog is data, not code: three sources under data/ (quotes,
+// egress rates, support and SLA terms), loaded per run through the
+// Zetaris data layer in src/zetaris.ts. Step 2 fetches the joined
+// catalog (live SQL when a Zetaris instance is configured, the bundled
+// CSV sources otherwise) and buildVendorRecords() derives the records
+// below. Fictional vendors and illustrative quotes; not real prices from
+// real companies. The point is the shape of the decision, not the numbers.
 
 export interface TcoRow {
   vendor: Vendor;
@@ -365,6 +341,8 @@ export function computeTCO(v: Vendor, volumeTB: number, termYears: number): TcoR
 interface Ctx {
   profile: TaskProfile;
   volumeTB: number;
+  /** Vendor catalog for this run, loaded from the data layer by step 2. */
+  vendors: Vendor[];
   tcoRows: TcoRow[];
   winner?: TcoRow;
   termsNote: string;
@@ -375,6 +353,8 @@ interface Ctx {
 interface StepOutput {
   outputSummary: string;
   detail: string;
+  /** Data provenance when the step fetched data; recorded on its receipt. */
+  data?: SourceFetch;
 }
 
 interface StepDef {
@@ -385,7 +365,7 @@ interface StepDef {
   /** Optional dynamic title, e.g. when the label depends on the task's term. */
   buildTitle?: (ctx: Ctx) => string;
   buildInput: (ctx: Ctx, task: string) => string;
-  execute: (ctx: Ctx, input: string) => StepOutput;
+  execute: (ctx: Ctx, input: string) => StepOutput | Promise<StepOutput>;
 }
 
 /** "Stratus Systems" -> "Stratus Systems'"; "Nimbus Cloud" -> "Nimbus Cloud's". */
@@ -442,20 +422,27 @@ const STEP_DEFS: StepDef[] = [
     step: "gather-quotes",
     title: "Research vendor quotes",
     buildInput: (ctx, task) => `${task} :: quotes for ${fmt(ctx.profile.contractAnnual)}/yr cloud infrastructure`,
-    execute: (ctx, _input) => {
-      const cheapest = VENDORS.reduce((a, b) => (b.headlineAnnual < a.headlineAnnual ? b : a));
+    execute: async (ctx, _input) => {
+      // The catalog fetch: live SQL through the Zetaris data layer when
+      // an instance is configured, the bundled CSV sources otherwise.
+      // The fetch travels with this step's receipt (query, rows, source).
+      const catalog = await fetchCatalog();
+      ctx.vendors = buildVendorRecords(catalog.rows);
+      const vendors = ctx.vendors;
+      const cheapest = vendors.reduce((a, b) => (b.headlineAnnual < a.headlineAnnual ? b : a));
       const budget = ctx.profile.contractAnnual;
-      const fitting = VENDORS.filter((v) => v.headlineAnnual <= budget);
+      const fitting = vendors.filter((v) => v.headlineAnnual <= budget);
       const budgetNote =
-        fitting.length === VENDORS.length
-          ? `All ${VENDORS.length} headlines fit inside the ${fmt(budget)}/yr compute budget, so headline price alone cannot decide this.`
-          : `${fitting.length} of ${VENDORS.length} headlines fit inside the ${fmt(budget)}/yr compute budget (${fitting.map((v) => v.name).join(", ")}); the rest open above budget, so total cost matters even more.`;
+        fitting.length === vendors.length
+          ? `All ${vendors.length} headlines fit inside the ${fmt(budget)}/yr compute budget, so headline price alone cannot decide this.`
+          : `${fitting.length} of ${vendors.length} headlines fit inside the ${fmt(budget)}/yr compute budget (${fitting.map((v) => v.name).join(", ")}); the rest open above budget, so total cost matters even more.`;
       return {
-        outputSummary: `Gathered quotes from ${VENDORS.map((v) => v.name).join(", ")}. Cheapest headline: ${cheapest.name} at ${fmt(cheapest.headlineAnnual)}/yr.`,
+        outputSummary: `Gathered quotes from ${vendors.map((v) => v.name).join(", ")}. Cheapest headline: ${cheapest.name} at ${fmt(cheapest.headlineAnnual)}/yr.`,
         detail:
           `Vendor quotes (fictional vendors, illustrative pricing):\n` +
-          VENDORS.map(quoteCard).join("\n") +
+          vendors.map(quoteCard).join("\n") +
           `\n\n${budgetNote}`,
+        data: catalog,
       };
     },
   },
@@ -484,9 +471,21 @@ const STEP_DEFS: StepDef[] = [
     agent: "research",
     step: "check-terms",
     title: "Check contract terms and support",
-    buildInput: (ctx) => `contract terms for ${VENDORS.map((v) => v.name).join(", ")} at ${ctx.volumeTB}TB/yr`,
-    execute: (ctx, _input) => {
-      const [nimbus, stratus, cirrus] = VENDORS;
+    buildInput: (ctx) => `contract terms for ${ctx.vendors.map((v) => v.name).join(", ")} at ${ctx.volumeTB}TB/yr`,
+    execute: async (ctx, _input) => {
+      // The terms fetch, recorded on this step's receipt the same way
+      // the catalog fetch is recorded on step 2's. The narrative below is
+      // built from the catalog step 2 loaded; the values are the same
+      // sources, so the two cannot disagree.
+      const terms = await fetchTerms();
+      const byName = (name: string): Vendor => {
+        const found = ctx.vendors.find((v) => v.name === name);
+        if (!found) throw new Error(`Vendor "${name}" missing from the loaded catalog`);
+        return found;
+      };
+      const nimbus = byName("Nimbus Cloud");
+      const stratus = byName("Stratus Systems");
+      const cirrus = byName("Cirrus Compute");
       ctx.termsNote =
         `Nimbus Cloud: SLA ${nimbus.sla}, ${nimbus.supportTier}. Egress is uncapped and metered at the highest rate (${fmt(nimbus.egressPerGB)}/GB): ` +
         `at ${ctx.volumeTB}TB/yr egress alone costs ${fmt(Math.round(ctx.volumeTB * 1000 * nimbus.egressPerGB))}/yr, rivaling the compute. Annual commit with auto-renew.\n` +
@@ -496,6 +495,7 @@ const STEP_DEFS: StepDef[] = [
       return {
         outputSummary: `Terms checked. Flag: Nimbus egress is uncapped at the highest metered rate; Stratus pricing hinges on the ${stratus.egressCapTB}TB cap.`,
         detail: `Contract terms and risk flags:\n${ctx.termsNote}`,
+        data: terms,
       };
     },
   },
@@ -506,10 +506,10 @@ const STEP_DEFS: StepDef[] = [
     title: "Compute TCO per vendor",
     buildTitle: (ctx) => `Compute ${ctx.profile.termYears}-year TCO per vendor`,
     buildInput: (ctx) =>
-      `${ctx.profile.termYears}-year TCO for ${VENDORS.map((v) => v.name).join(", ")} at ${ctx.volumeTB}TB/yr egress, ` +
+      `${ctx.profile.termYears}-year TCO for ${ctx.vendors.map((v) => v.name).join(", ")} at ${ctx.volumeTB}TB/yr egress, ` +
       `compute plus egress plus support`,
     execute: (ctx, _input) => {
-      const rows = VENDORS.map((v) => computeTCO(v, ctx.volumeTB, ctx.profile.termYears));
+      const rows = ctx.vendors.map((v) => computeTCO(v, ctx.volumeTB, ctx.profile.termYears));
       rows.sort((a, b) => a.tco - b.tco);
       ctx.tcoRows = rows;
       ctx.winner = rows[0];
@@ -546,17 +546,17 @@ const STEP_DEFS: StepDef[] = [
         // superlative is used only when the data supports it: the SLA
         // figure is the highest in the field, or the support package is
         // the most comprehensive (priciest) in the field.
-        const bestSla = Math.max(...VENDORS.map((v) => parseFloat(v.sla)));
+        const bestSla = Math.max(...ctx.vendors.map((v) => parseFloat(v.sla)));
         const slaClaim =
           parseFloat(w.vendor.sla) >= bestSla
             ? `It also carries the strongest SLA in the field at ${w.vendor.sla}.`
             : `Its SLA is ${w.vendor.sla}.`;
-        const priciestSupport = Math.max(...VENDORS.map((v) => v.supportAnnual));
+        const priciestSupport = Math.max(...ctx.vendors.map((v) => v.supportAnnual));
         const supportClaim =
           w.vendor.supportAnnual >= priciestSupport
             ? `Support is ${w.vendor.supportTier} at ${fmt(w.vendor.supportAnnual)}/yr, the most comprehensive package in the field.`
             : `Support is ${w.vendor.supportTier} at ${fmt(w.vendor.supportAnnual)}/yr.`;
-        const budgetClaim = VENDORS.every((v) => v.headlineAnnual <= ctx.profile.contractAnnual)
+        const budgetClaim = ctx.vendors.every((v) => v.headlineAnnual <= ctx.profile.contractAnnual)
           ? `All three headlines fit the ${fmt(ctx.profile.contractAnnual)}/yr compute budget, so the decision comes down to total cost`
           : `The headlines straddle the ${fmt(ctx.profile.contractAnnual)}/yr compute budget, so the decision comes down to total cost`;
         ctx.recommendation =
@@ -729,6 +729,7 @@ export async function runPipeline(
   const ctx: Ctx = {
     profile: parseTask(clean),
     volumeTB: 400,
+    vendors: [],
     tcoRows: [],
     termsNote: "",
     recommendation: "",
@@ -749,6 +750,7 @@ export async function runPipeline(
     model?: string;
     targetAgent?: string | null;
     retryCount?: number;
+    data?: SourceFetch;
   }): void {
     // The handoff target is the next step's agent. The last pipeline step
     // hands off to the evaluator; the evaluator hands off to nobody. Steps
@@ -782,6 +784,9 @@ export async function runPipeline(
       model: args.model ?? "deterministic",
       targetAgent: args.targetAgent !== undefined ? args.targetAgent : nextAgent,
       retryCount: args.retryCount ?? 0,
+      ...(args.data
+        ? { query: args.data.query, rows: args.data.rows, dataSource: args.data.dataSource }
+        : {}),
       prevHash: "",
       hash: "",
     });
@@ -857,7 +862,7 @@ export async function runPipeline(
         amountUSDC: PRICE_PER_STEP,
         memo: `thought-receipts/${def.step}`,
       });
-      const out = def.execute(ctx, input);
+      const out = await def.execute(ctx, input);
       pushReceipt({
         def,
         input,
@@ -873,6 +878,7 @@ export async function runPipeline(
         status: "recovered",
         note: "retry succeeded",
         retryCount: 1,
+        data: out.data,
       });
       continue;
     }
@@ -884,7 +890,7 @@ export async function runPipeline(
       amountUSDC: PRICE_PER_STEP,
       memo: `thought-receipts/${def.step}`,
     });
-    const out = def.execute(ctx, input);
+    const out = await def.execute(ctx, input);
     pushReceipt({
       def,
       input,
@@ -898,6 +904,7 @@ export async function runPipeline(
         mock: payment.mock,
       },
       status: "ok",
+      data: out.data,
     });
   }
 

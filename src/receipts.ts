@@ -39,6 +39,17 @@ export interface Receipt {
   targetAgent: string | null;
   /** Retry count for this step: 0 for a first attempt, incremented on retries. */
   retryCount: number;
+  /**
+   * Data provenance, present only on receipts whose step fetched data:
+   * the SQL the step ran against the data layer. The same SQL text is
+   * recorded when the bundled CSV fallback served the fetch, because it
+   * is the query the fetch stands for in both modes.
+   */
+  query?: string;
+  /** Data provenance: the rows the step's fetch actually used, as compact string records. */
+  rows?: Record<string, string>[];
+  /** Data provenance: which path served the fetch, live Zetaris SQL or the bundled CSV fallback. */
+  dataSource?: "zetaris" | "csv-fallback";
   /** Hash of the previous receipt in the chain, or "GENESIS" for the first. */
   prevHash: string;
   /** sha256 hex of (prevHash + canonical JSON of this receipt minus hash). */

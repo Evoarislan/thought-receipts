@@ -75,7 +75,7 @@ Payments use the x402 pattern with EIP-3009 USDC authorizations on Base Sepolia 
 ## How we built it: AI, models, and sponsors
 
 - **Meterless** is the primary model provider in a provider chain implemented in `src/agents.ts`. When `METERLESS_BASE_URL` and `METERLESS_API_KEY` are set, model calls go to the Meterless endpoint (OpenAI-compatible) running NVIDIA Nemotron; OpenRouter is the fallback when Meterless is not configured or unreachable. The chain is implemented and verified against a local stub endpoint; a live test against the event endpoint is pending the event API key.
-- **Zetaris** is the data layer in progress. The vendor dataset is prepared as three separate CSV sources under `data/` (quotes, egress rates, support and SLA terms), and `src/zetaris.ts` is the client seam that resolves those sources offline today. Wiring the app to the live Zetaris AWS cluster is the remaining step and is in progress; live SQL queries do not run yet.
+- **Zetaris** is the data layer. The vendor catalog lives in three sources (quotes, egress rates, support and SLA terms), registered in Zetaris as separate tables and bundled as CSV files under `data/`. The pipeline's data steps fetch through `src/zetaris.ts`: when `ZETARIS_BASE_URL` is set, they run SQL against the instance (a join across the three sources for the catalog, a select for the terms) and each data receipt records the query, the returned rows, and `dataSource: "zetaris"`. When no instance is configured, when `SAMPLE_MODE` is on, or when the instance errors, the same steps serve the bundled CSV sources and the receipts record `dataSource: "csv-fallback"` instead. The wiring is implemented and verified against a local stub endpoint; a live test against the managed AWS cluster is still pending the cluster itself, whose AWS credential verification is currently blocked. The managed cluster's exact HTTP SQL contract is not public, so the endpoint path and auth are environment-configurable in the one module that makes the call.
 - **Cursor** is the development environment: this repo was developed and smoke-tested in the Cursor IDE with its Agent.
 - **NVIDIA** Nemotron models are the product's reasoning models, reached through the provider chain above. The model ids in use are `nvidia/nemotron-3-ultra-550b-a55b` (the default `NEMOTRON_MODEL` on the Meterless path) and, on the OpenRouter fallback path, `nvidia/nemotron-3-ultra-550b-a55b:free` then `nvidia/nemotron-3-super-120b-a12b:free`. Model output enters the product in exactly two places: drafting Why answers (shown only after verification against the cited receipts) and critiquing the synthesis inside the evaluator receipt. Both record the provider and the exact model id that answered.
 
@@ -147,11 +147,11 @@ With `SAMPLE_MODE=false` (the default), the behavior above flips only where a mo
 - `src/agents.ts` ... coordinator + 3 specialists + evaluator verification step, deterministic reasoning, LLM adapter seam (`reasonWithModel`), SAMPLE_MODE flag, chaos failure/recovery mode
 - `src/receipts.ts` ... hash-chained receipts (sha256, prevHash), tamper verification, itemized bill
 - `src/why.ts` ... "Why?" answering over the receipt chain with citations; model drafts are verified against the cited receipts before use, and the answer reports its mode
-- `src/zetaris.ts` ... Zetaris client seam: resolves the three vendor CSV sources under `data/` offline today; the live cluster endpoint plugs in here
+- `src/zetaris.ts` ... Zetaris data layer: the vendor queries, the live SQL client (env-configured endpoint), the bundled CSV fallback, and the loader that derives the vendor catalog from either path's rows
 - `src/server.ts` ... plain `http` server, JSON API, static frontend
 - `public/index.html` ... dark single-page UI: live feed, bill, challenge panel, Why box with answer-mode label, verify badge, tamper simulation
-- `data/` ... the vendor dataset as three CSV sources (quotes, egress rates, support and SLA terms) prepared for Zetaris registration, with a data dictionary in `data/README.md`
-- `scripts/` ... verification scripts; `zetaris-smoke.ts` checks the CSV sources reproduce the in-code TCO math exactly
+- `data/` ... the vendor dataset as three CSV sources (quotes, egress rates, support and SLA terms): the canonical catalog the pipeline loads, registered as the matching tables in Zetaris, with a data dictionary in `data/README.md`
+- `scripts/` ... verification scripts; `zetaris-smoke.ts` checks the CSV sources reproduce the pipeline's TCO math exactly
 - `metadata.json` ... submission metadata: track, team, sponsors, and honest integration status
 
 ## Honest notes
