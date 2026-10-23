@@ -232,19 +232,36 @@ export async function reasonWithModel(prompt: string): Promise<string> {
   return (await reasonWithModelDetailed(prompt)).text;
 }
 
+/**
+ * Annual compute budget stated by a text, or null when the text is
+ * silent about money. The stated-vs-silent split matters for the same
+ * reason as volume (see parseStatedVolumeTB): the workload step reads
+ * its input back for stated values, and an edit that never mentions a
+ * budget must not be read as one.
+ */
+export function parseStatedBudgetUSD(text: string): number | null {
+  const money = /\$\s*([\d,]+(?:\.\d+)?)\s*([km])?/.exec(text.toLowerCase());
+  if (!money) return null;
+  const n = parseFloat(money[1].replace(/,/g, ""));
+  const mult = money[2] === "k" ? 1000 : money[2] === "m" ? 1000000 : 1;
+  return Math.round(n * mult);
+}
+
+/**
+ * Contract term in years stated by a text, or null when the text is
+ * silent about a term. Stated terms are clamped to 1..10 years, the
+ * same clamp the task parse has always applied.
+ */
+export function parseStatedTermYears(text: string): number | null {
+  const term = /(\d+)\s*-?\s*year/.exec(text.toLowerCase());
+  if (!term) return null;
+  return Math.min(10, Math.max(1, parseInt(term[1], 10)));
+}
+
 export function parseTask(task: string): TaskProfile {
-  const t = task.toLowerCase();
-  const money = /\$\s*([\d,]+(?:\.\d+)?)\s*([km])?/.exec(t);
-  let contractAnnual = 60000;
-  if (money) {
-    const n = parseFloat(money[1].replace(/,/g, ""));
-    const mult = money[2] === "k" ? 1000 : money[2] === "m" ? 1000000 : 1;
-    contractAnnual = Math.round(n * mult);
-  }
-  const term = /(\d+)\s*-?\s*year/.exec(t);
   return {
-    contractAnnual,
-    termYears: term ? Math.min(10, Math.max(1, parseInt(term[1], 10))) : 3,
+    contractAnnual: parseStatedBudgetUSD(task) ?? 60000,
+    termYears: parseStatedTermYears(task) ?? 3,
   };
 }
 
@@ -318,8 +335,10 @@ export function parseStatedVolumeTB(text: string): number | null {
 }
 
 /**
- * The workload step's parse of the same input: a task that states no
- * volume profiles the documented default of 400 TB/yr.
+ * A task's own volume parse: the volume the task states, or the
+ * documented default of 400 TB/yr when it states none. runPipeline
+ * seeds the run's profiled volume with this, so the value is already
+ * in the context when the workload step refines it from its input.
  */
 export function parseVolumeTB(text: string): number {
   return parseStatedVolumeTB(text) ?? 400;
@@ -891,7 +910,25 @@ const STEP_DEFS: StepDef[] = [
     title: "Profile the workload",
     buildInput: (_ctx, task) => `${task} :: workload profile: annual data transfer volume in TB, contract term, primary region`,
     execute: (ctx, input) => {
-      ctx.volumeTB = parseVolumeTB(input);
+      // This step's input is the profiling instruction: on an unedited
+      // run the built input restates the task, so the values below
+      // round-trip the ones parseTask and the volume seed already put
+      // in the context. A challenge that edits this step's input
+      // ("profile it with a $999K budget over 9 years") replaces that
+      // input wholesale, so the step re-reads its input for the values
+      // the edit STATES and writes them into the context, where every
+      // downstream step (pricing, the recommendation, the final
+      // answer) reads them consistently. A field the edit is silent
+      // about keeps the profiled value: silence never resets the
+      // budget or term the task set, and never resets a profiled
+      // volume to the 400 TB/yr default. This mirrors the compute
+      // step's stated-vs-silent volume handling.
+      const statedBudget = parseStatedBudgetUSD(input);
+      if (statedBudget !== null) ctx.profile.contractAnnual = statedBudget;
+      const statedTerm = parseStatedTermYears(input);
+      if (statedTerm !== null) ctx.profile.termYears = statedTerm;
+      const statedVolume = parseStatedVolumeTB(input);
+      if (statedVolume !== null) ctx.volumeTB = statedVolume;
       return {
         outputSummary: `Workload: ${ctx.volumeTB}TB/yr data transfer, ${ctx.profile.termYears}-year term, primary region us-east.`,
         detail:
@@ -1271,7 +1308,14 @@ export async function runPipeline(
 
   const ctx: Ctx = {
     profile: parseTask(clean),
-    volumeTB: 400,
+    // The run's profiled volume starts as the volume the task itself
+    // states (400 TB/yr when it states none). The workload step's
+    // built input restates the task, so on an unedited run the step
+    // re-derives this same value. The seed matters on a challenge
+    // re-run: the challenged step's input is only the edit text, so
+    // when the workload step is challenged with an edit silent about
+    // volume, this seed is the profiled volume it keeps.
+    volumeTB: parseVolumeTB(clean),
     vendors: [],
     tcoRows: [],
     termsNote: "",
